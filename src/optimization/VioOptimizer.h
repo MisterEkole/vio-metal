@@ -28,9 +28,9 @@ class VioOptimizer {
 public:
     struct Config {
         int window_size = 12;
-        int max_iterations = 5;
-        double huber_reprojection = 1.5;
-        double huber_imu = 1.0;
+        int max_iterations = 30;
+        double huber_reprojection = 1.0;
+        double huber_imu = 0;
         bool use_dogleg = true;
     };
 
@@ -55,6 +55,7 @@ public:
     int windowSize() const { return static_cast<int>(window_.size()); }
 
     void setLandmarks(const std::unordered_map<uint64_t, Eigen::Vector3d>& landmarks);
+    void addObservations(uint64_t timestamp, const std::vector<FeatureObservation>& obs);
 
 private:
     void marginalize();
@@ -78,4 +79,4 @@ private:
 };
 
 
-} 
+}

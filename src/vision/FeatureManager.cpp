@@ -66,6 +66,38 @@ void FeatureManager::updateTracks(
     current_points_ = std::move(new_points);
 }
 
+// --- Update stereo observations for tracked features at keyframes ---
+void FeatureManager::updateStereoForTracked(
+    uint64_t timestamp,
+    const std::vector<uint64_t>& tracked_ids,
+    const std::vector<StereoMatcher::StereoMatch>& stereo_matches)
+{
+    for (const auto& m : stereo_matches) {
+        // m.left_idx is already remapped to index in tracked_ids
+        if (m.left_idx < 0 || m.left_idx >= static_cast<int>(tracked_ids.size())) continue;
+        
+        uint64_t fid = tracked_ids[m.left_idx];
+        auto it = tracks_.find(fid);
+        if (it == tracks_.end()) continue;
+
+        auto& track = it->second;
+        
+        // Update the right observation for the current frame (last entry)
+        if (!track.observations_right.empty() && !track.observations_left.empty()) {
+            double u_left = track.observations_left.back().x();
+            double v_left = track.observations_left.back().y();
+            track.observations_right.back() = Eigen::Vector2d(
+                u_left - m.disparity, v_left);
+        }
+        
+        // Initialize 3D position if not already set
+        if (!track.landmark_initialized) {
+            track.landmark_3d = m.point_3d;
+            track.landmark_initialized = true;
+        }
+    }
+}
+
 // --- NEW METHOD IMPLEMENTATION ---
 
 std::unordered_map<uint64_t, Eigen::Vector3d> FeatureManager::getInitializedLandmarksWorld(
@@ -75,12 +107,6 @@ std::unordered_map<uint64_t, Eigen::Vector3d> FeatureManager::getInitializedLand
 {
     std::unordered_map<uint64_t, Eigen::Vector3d> landmarks_world;
     
-    // T_cam_imu = calib.T_cam0_imu = camera→body transform.
-    // landmark_3d is in camera frame at first observation.
-    // Apply camera→body forward, then body→world.
-    //
-    //   p_body = R_cam_imu × p_cam + t_cam_imu   (camera → body)
-    //   p_world = R_wb × p_body + t_wb            (body → world)
     Eigen::Matrix3d R_ci = T_cam_imu.block<3,3>(0,0);
     Eigen::Vector3d t_ci = T_cam_imu.block<3,1>(0,3);
 
@@ -156,4 +182,4 @@ void FeatureManager::removeTracksOlderThan(uint64_t timestamp) {
     }
 }
 
-} 
+}

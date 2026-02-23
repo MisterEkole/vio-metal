@@ -2,15 +2,10 @@
 #include "optimization/Factors.h"
 #include <ceres/ceres.h>
 #include <ceres/numeric_diff_cost_function.h>
+#include <unordered_set>
 #include <iostream>
 
 namespace vio {
-
-// ================================================================
-// BUG 1 FIX: These 5 methods were declared in the header but NEVER
-// defined. This causes linker errors: "undefined reference to
-// VioOptimizer::VioOptimizer(...)", etc.
-// ================================================================
 
 VioOptimizer::VioOptimizer(const Config& config, const StereoCalibration& calib)
     : config_(config), calib_(calib) {}
@@ -110,16 +105,41 @@ void VioOptimizer::setLandmarks(
     }
 }
 
+void VioOptimizer::addObservations(
+    uint64_t timestamp, const std::vector<FeatureObservation>& obs)
+{
+    observations_[timestamp] = obs;
+}
+
 // ================================================================
 // optimize — build and solve the Ceres problem
 // ================================================================
 KeyframeState VioOptimizer::optimize() {
     if (window_.size() < 2) return window_.back();
 
+    // --- Prune stale landmarks not visible in current window ---
+    {
+        // Collect all feature IDs observed in the current window
+        std::unordered_set<uint64_t> visible_ids;
+        for (const auto& [ts, obs_list] : observations_) {
+            for (const auto& obs : obs_list) {
+                visible_ids.insert(obs.feature_id);
+            }
+        }
+        // Remove landmarks not observed by any keyframe in the window
+        for (auto it = landmarks_.begin(); it != landmarks_.end(); ) {
+            if (visible_ids.find(it->first) == visible_ids.end()) {
+                it = landmarks_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
     ceres::Problem problem;
     int n = static_cast<int>(window_.size());
 
-    // 1. Parameter buffers
+ 
     struct LocalState {
         double p[3];
         double q[4];   // Eigen internal order: x, y, z, w
@@ -146,11 +166,12 @@ KeyframeState VioOptimizer::optimize() {
         problem.AddParameterBlock(params[i].vba, 9);
     }
 
-    // Gauge freedom: fix first keyframe
+    // Gauge freedom: fix first keyframe completely (pose + velocity + biases)
     problem.SetParameterBlockConstant(params[0].p);
     problem.SetParameterBlockConstant(params[0].q);
+    problem.SetParameterBlockConstant(params[0].vba);
 
-    // 2. Landmark parameter blocks
+    // Landmark parameter blocks
     std::unordered_map<uint64_t, std::array<double, 3>> lm_params;
     for (const auto& [id, pos] : landmarks_) {
         if (std::isnan(pos.x()) || std::isinf(pos.x())) continue;
@@ -160,14 +181,16 @@ KeyframeState VioOptimizer::optimize() {
         problem.AddParameterBlock(data.data(), 3);
     }
 
-    // 3. Vision residuals
+    // Vision residuals
     double fx = calib_.intrinsics_left[0], fy = calib_.intrinsics_left[1];
     double cx = calib_.intrinsics_left[2], cy = calib_.intrinsics_left[3];
     double baseline = calib_.T_cam1_cam0.block<3,1>(0,3).norm();
-    Eigen::Matrix4d T_bc = calib_.T_cam0_imu;  // body→camera
+    Eigen::Matrix4d T_bc = calib_.T_cam0_imu;  // camera→body (used inverted in factor)
 
     Eigen::Matrix2d sqrt_info_mono = Eigen::Matrix2d::Identity() * (1.0 / 1.5);
     Eigen::Matrix4d sqrt_info_stereo = Eigen::Matrix4d::Identity() * (1.0 / 1.5);
+
+    int num_stereo_res = 0, num_mono_res = 0, num_obs_total = 0, num_lm_miss = 0;
 
     for (int i = 0; i < n; ++i) {
         uint64_t ts = window_[i].timestamp;
@@ -175,8 +198,9 @@ KeyframeState VioOptimizer::optimize() {
         if (obs_it == observations_.end()) continue;
 
         for (const auto& obs : obs_it->second) {
+            num_obs_total++;
             auto lm_it = lm_params.find(obs.feature_id);
-            if (lm_it == lm_params.end()) continue;
+            if (lm_it == lm_params.end()) { num_lm_miss++; continue; }
 
             double* lm_ptr = lm_it->second.data();
             auto* loss = new ceres::HuberLoss(config_.huber_reprojection);
@@ -186,15 +210,17 @@ KeyframeState VioOptimizer::optimize() {
                     new StereoReprojectionFactor(obs.pixel_left, obs.pixel_right,
                         fx, fy, cx, cy, baseline, T_bc, sqrt_info_stereo));
                 problem.AddResidualBlock(cf, loss, params[i].p, params[i].q, lm_ptr);
+                num_stereo_res++;
             } else {
                 auto* cf = new ceres::AutoDiffCostFunction<MonoReprojectionFactor, 2, 3, 4, 3>(
                     new MonoReprojectionFactor(obs.pixel_left, fx, fy, cx, cy, T_bc, sqrt_info_mono));
                 problem.AddResidualBlock(cf, loss, params[i].p, params[i].q, lm_ptr);
+                num_mono_res++;
             }
         }
     }
 
-    // 4. IMU residuals
+    // IMU residuals
     Eigen::Vector3d g = gravity();
     for (int i = 0; i < n - 1; ++i) {
         if (i >= static_cast<int>(preint_between_.size())) break;
@@ -207,7 +233,7 @@ KeyframeState VioOptimizer::optimize() {
                                  params[i+1].p, params[i+1].q, params[i+1].vba);
     }
 
-    // 5. Solve
+    // Solve
     ceres::Solver::Options options;
     options.linear_solver_type = ceres::DENSE_SCHUR;
     options.max_num_iterations = config_.max_iterations;
@@ -217,7 +243,30 @@ KeyframeState VioOptimizer::optimize() {
     ceres::Solver::Summary summary;
     ceres::Solve(options, &problem, &summary);
 
-    // 6. Write-back
+    // === DIAGNOSTICS ===
+    static int opt_call = 0;
+    if (opt_call < 5 || opt_call % 50 == 0) {
+        std::cerr << "[OPT #" << opt_call << "] kf=" << n
+                  << " stereo_res=" << num_stereo_res
+                  << " mono_res=" << num_mono_res
+                  << " obs_total=" << num_obs_total
+                  << " lm_miss=" << num_lm_miss
+                  << " lm_pool=" << lm_params.size()
+                  << " obs_map=" << observations_.size()
+                  << " baseline=" << baseline
+                  << "\n";
+        std::cerr << "  cost: " << summary.initial_cost << " -> " << summary.final_cost
+                  << " iters=" << summary.iterations.size()
+                  << " term=" << ceres::TerminationTypeToString(summary.termination_type)
+                  << "\n";
+        // Print latest keyframe state
+        const auto& last = window_.back();
+        std::cerr << "  pos=(" << last.position.transpose() << ")"
+                  << " vel=(" << last.velocity.transpose() << ")\n";
+    }
+    opt_call++;
+
+    // Write-back
     for (int i = 0; i < n; ++i) {
         auto& state = window_[i];
         state.position = Eigen::Map<Eigen::Vector3d>(params[i].p);
@@ -239,4 +288,4 @@ KeyframeState VioOptimizer::optimize() {
     return window_.back();
 }
 
-} // namespace vio
+} 

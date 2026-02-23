@@ -38,23 +38,25 @@ namespace vio{
 
         // Covariance propagation
         Eigen::Matrix<double, 9,9> A = Eigen::Matrix<double,9,9>::Identity();
-        Eigen::Matrix<double, 9,6> B = Eigen::Matrix<double,9,6>::Identity();
+        Eigen::Matrix<double, 9,6> B = Eigen::Matrix<double,9,6>::Zero();
 
-        // A matrix(error-state transition)
+        // A matrix (error-state transition)
         A.block<3,3>(0,0) = dR_inc.transpose();
         A.block<3,3>(3,0) = -R_k * skewSymmetric(acc) * dt;
         A.block<3,3>(6,0) = -0.5 * R_k * skewSymmetric(acc) * dt * dt;
+        A.block<3,3>(6,3) = Eigen::Matrix3d::Identity() * dt;  // BUG FIX 1: was missing
 
-        // B matrix (noise input)
-        B.block<3,3>(0,0) = Jr * dt;
-        B.block<3,3>(3,3) = -R_k *skewSymmetric(acc) * dt;
-        B.block<3,3>(6,3) = Eigen::Matrix3d::Identity()*dt;
+        // B matrix (noise input: maps measurement noise to state error)
+        B.block<3,3>(0,0) = Jr * dt;                   // Gyro noise → rotation error
+        B.block<3,3>(3,3) = R_k * dt;                  // BUG FIX 2: was -R_k*skew(acc)*dt (an A-matrix term!)
+        B.block<3,3>(6,3) = 0.5 * R_k * dt * dt;      // BUG FIX 3: was I*dt
 
-        // Noise covariance(continuous-< discrete)
-
+        // Noise covariance (continuous PSD → discrete)
         Eigen::Matrix<double, 6,6> Qc = Eigen::Matrix<double, 6,6>::Zero();
-        Qc.block<3,3>(0,0)= Eigen::Matrix3d::Identity() * noise_.gyro_noise_density * dt;
-        Qc.block<3,3>(3,3) = Eigen::Matrix3d::Identity() * noise_.accel_noise_density * dt;
+        double ng2 = noise_.gyro_noise_density * noise_.gyro_noise_density;   // BUG FIX 4: must square σ
+        double na2 = noise_.accel_noise_density * noise_.accel_noise_density;
+        Qc.block<3,3>(0,0) = Eigen::Matrix3d::Identity() * ng2;
+        Qc.block<3,3>(3,3) = Eigen::Matrix3d::Identity() * na2;
 
         cov_ = A * cov_ * A.transpose() + B * Qc * B.transpose();
 
@@ -103,9 +105,9 @@ namespace vio{
         r.delta_R = dR_ * Eigen::Quaterniond(expSO3(dR_correction));
         r.delta_R.normalize();
 
-        // vel and pos correction
-        r.delta_v = J_bg_.block<3,3>(3,0).transpose() * dbg + J_ba_.block<3,3>(3,0).transpose() * dba;
-        r.delta_p = J_bg_.block<3,3>(6,0).transpose() * dbg + J_ba_.block<3,3>(6,0).transpose() * dba;
+        // vel and pos correction (ADD to original, don't overwrite)
+        r.delta_v = dv_ + J_bg_.block<3,3>(3,0) * dbg + J_ba_.block<3,3>(3,0) * dba;
+        r.delta_p = dp_ + J_bg_.block<3,3>(6,0) * dbg + J_ba_.block<3,3>(6,0) * dba;
 
         r.linearized_bg = new_bg;
         r.linearized_ba = new_ba;
