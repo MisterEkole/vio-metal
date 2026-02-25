@@ -13,7 +13,6 @@ MetalUndistort::MetalUndistort(MetalContext* context,
                                const std::string& metallib_path)
     : context_(context), width_(width), height_(height)
 {
-    // Call C++ methods using -> 
     void* lib_ptr = context_->loadLibrary(metallib_path);
     if (!lib_ptr) {
         std::cerr << "[MetalUndistort] Failed to load metallib: " << metallib_path << "\n";
@@ -21,14 +20,11 @@ MetalUndistort::MetalUndistort(MetalContext* context,
     }
     id<MTLLibrary> library = (__bridge id<MTLLibrary>)lib_ptr;
     
-    // Use the C++ getPipeline method
     void* pipe_ptr = context_->getPipeline("undistort", (__bridge void*)library);
     pipeline_ = (__bridge id<MTLComputePipelineState>)pipe_ptr;
     
-    // Cast the void* device from the C++ context back to id<MTLDevice>
     id<MTLDevice> device = (__bridge id<MTLDevice>)context_->getDevice();
 
-    // Use Objective-C syntax for the Apple classes (MTLTextureDescriptor)
     MTLTextureDescriptor* desc = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatR32Float
                                                                                     width:width
                                                                                    height:height
@@ -39,12 +35,10 @@ MetalUndistort::MetalUndistort(MetalContext* context,
     map_x_texture_ = [device newTextureWithDescriptor:desc];
     map_y_texture_ = [device newTextureWithDescriptor:desc];
     
-    // Upload LUTs
     MTLRegion region = MTLRegionMake2D(0, 0, width, height);
     [map_x_texture_ replaceRegion:region mipmapLevel:0 withBytes:map_x.data bytesPerRow:width * sizeof(float)];
     [map_y_texture_ replaceRegion:region mipmapLevel:0 withBytes:map_y.data bytesPerRow:width * sizeof(float)];
 
-    // Input/Output textures
     desc.pixelFormat = MTLPixelFormatR8Unorm;
     desc.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
     input_texture_ = [device newTextureWithDescriptor:desc];
@@ -53,13 +47,14 @@ MetalUndistort::MetalUndistort(MetalContext* context,
     ready_ = (pipeline_ != nil && map_x_texture_ != nil);
 }
 
-cv::Mat MetalUndistort::undistort(const cv::Mat& input) {
-    if (!ready_ || input.empty()) return input.clone();
+// ASYNCHRONOUS DISPATCH: Call at start of frame
+void MetalUndistort::encodeUndistort(const cv::Mat& input) {
+    if (!ready_ || input.empty()) return;
 
+    // Upload CPU image to GPU texture
     MTLRegion region = MTLRegionMake2D(0, 0, width_, height_);
     [input_texture_ replaceRegion:region mipmapLevel:0 withBytes:input.data bytesPerRow:input.step];
 
-    // Get the command queue from our C++ context using ->
     id<MTLCommandQueue> queue = (__bridge id<MTLCommandQueue>)context_->getCommandQueue();
     id<MTLCommandBuffer> commandBuffer = [queue commandBuffer];
     id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
@@ -75,13 +70,27 @@ cv::Mat MetalUndistort::undistort(const cv::Mat& input) {
     [encoder dispatchThreads:gridSize threadsPerThreadgroup:groupSize];
     [encoder endEncoding];
     
-    [commandBuffer commit];
-    [commandBuffer waitUntilCompleted];
+    // Fire the GPU. No wait!!
 
+    [commandBuffer commit];
+    context_->setLastBuffer((__bridge void*)commandBuffer);
+}
+
+// DATA RETRIEVAL: call after end frame 
+cv::Mat MetalUndistort::getOutputMat() {
     cv::Mat output(height_, width_, CV_8UC1);
-    [output_texture_ getBytes:output.data bytesPerRow:output.step fromRegion:region mipmapLevel:0];
+    MTLRegion region = MTLRegionMake2D(0, 0, width_, height_);
     
+    
+    [output_texture_ getBytes:output.data bytesPerRow:output.step fromRegion:region mipmapLevel:0];
     return output;
 }
 
-} 
+
+cv::Mat MetalUndistort::undistort(const cv::Mat& input) {
+    encodeUndistort(input);
+    context_->waitForGPU(); // Force wait 
+    return getOutputMat();
+}
+
+}
