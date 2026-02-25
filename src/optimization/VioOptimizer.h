@@ -27,11 +27,11 @@ struct KeyframeState {
 class VioOptimizer {
 public:
     struct Config {
-        int window_size = 12;
+        int window_size = 20 ;
         int max_iterations = 30;
         double huber_reprojection = 1.0;
         double huber_imu = 0;
-        bool use_dogleg = true;
+        bool use_dogleg = false;
     };
 
     VioOptimizer(const Config& config, const StereoCalibration& calib);

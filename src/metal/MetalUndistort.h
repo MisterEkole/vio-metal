@@ -32,6 +32,13 @@ public:
 
     double lastGpuTimeMs() const { return last_gpu_ms_; }
     bool isReady() const { return ready_; }
+    void* outputTexture() const{
+        #ifdef __OBJC__
+            return (__bridge void*)output_texture_;
+        #else
+            return output_texture_;
+        #endif
+    }
 
 private:
     MetalContext* context_; 

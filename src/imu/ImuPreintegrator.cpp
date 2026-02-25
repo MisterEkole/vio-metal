@@ -44,16 +44,16 @@ namespace vio{
         A.block<3,3>(0,0) = dR_inc.transpose();
         A.block<3,3>(3,0) = -R_k * skewSymmetric(acc) * dt;
         A.block<3,3>(6,0) = -0.5 * R_k * skewSymmetric(acc) * dt * dt;
-        A.block<3,3>(6,3) = Eigen::Matrix3d::Identity() * dt;  // BUG FIX 1: was missing
+        A.block<3,3>(6,3) = Eigen::Matrix3d::Identity() * dt;  
 
         // B matrix (noise input: maps measurement noise to state error)
-        B.block<3,3>(0,0) = Jr * dt;                   // Gyro noise → rotation error
-        B.block<3,3>(3,3) = R_k * dt;                  // BUG FIX 2: was -R_k*skew(acc)*dt (an A-matrix term!)
-        B.block<3,3>(6,3) = 0.5 * R_k * dt * dt;      // BUG FIX 3: was I*dt
+        B.block<3,3>(0,0) = Jr * dt;                   
+        B.block<3,3>(3,3) = R_k * dt;                  
+        B.block<3,3>(6,3) = 0.5 * R_k * dt * dt;      
 
         // Noise covariance (continuous PSD → discrete)
         Eigen::Matrix<double, 6,6> Qc = Eigen::Matrix<double, 6,6>::Zero();
-        double ng2 = noise_.gyro_noise_density * noise_.gyro_noise_density;   // BUG FIX 4: must square σ
+        double ng2 = noise_.gyro_noise_density * noise_.gyro_noise_density;     
         double na2 = noise_.accel_noise_density * noise_.accel_noise_density;
         Qc.block<3,3>(0,0) = Eigen::Matrix3d::Identity() * ng2;
         Qc.block<3,3>(3,3) = Eigen::Matrix3d::Identity() * na2;
@@ -71,7 +71,13 @@ namespace vio{
         J_ba_.block<3,3>(3,0) = J_ba_.block<3,3>(3,0) - R_k * dt;
         J_ba_.block<3,3>(6,0) = J_ba_.block<3,3>(6,0) + J_ba_.block<3,3>(3,0) * dt - 0.5 * R_k * dt * dt;
 
+        // Eigen::Vector3d world_gravity(0, 0, -9.81); 
+        // // Subtract gravity in the body frame before integrating
+        // Eigen::Vector3d acc_corrected = acc - R_k.transpose() * world_gravity;
+
         // ---- Update preintegrated measurements ----
+
+    
         dp_ = dp_ + dv_ * dt + 0.5 * R_k * acc * dt * dt;
         dv_ = dv_ + R_k * acc * dt;
         dR_ = Eigen::Quaterniond(R_k * dR_inc);

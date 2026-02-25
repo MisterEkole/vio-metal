@@ -1,2 +1,1 @@
-// This file is intentionally empty because all 
-// AutoDiff logic is templated in the header.
+// This file is intentionally left blank

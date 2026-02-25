@@ -240,4 +240,4 @@ StereoCalibration EurocLoader::getCalibration() const {
     return calib;
 }
 
-} // namespace vio
+} 
