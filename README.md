@@ -1,9 +1,13 @@
-# Performance Benchmarks
+<INSERT_FULL_README_CONTENT_HERE_OF_README.md>
 
-## Apple M-series Processor Benchmarks
+## Architecture & Data Flow
 
-Using EuRoC V1_01_easy dataset:
-- Benchmark 1: XX ms
-- Benchmark 2: YY ms
-- Benchmark 3: ZZ ms
+1. **Input Source**
+    
+    Stereo Images
+    
+2. **Metal GPU Pipeline Flow (vio-metal-gpu)**
 
+    Stereo Images → Metal Undistort → Metal FAST + Harris NMS → Metal ORB → Metal Stereo Matcher
+    
+3. **Metal KLT Tracker** (now moved to CPU)
