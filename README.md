@@ -54,7 +54,7 @@ Download the EuRoC MAV Dataset:
 
 The pipeline can be run in either CPU mode (OpenCV vision) or GPU mode (Metal vision with CPU-based KLT tracking). A real-time Pangolin visualizer will spawn to plot the Ground Truth (Red) vs Estimated Trajectory (Green).
 
-**Note:** Replace `<path_to_euroc_dataset>` with the actual path on your local machine (e.g., `/Users/ekole/Datasets/vicon_room1/V1_01_easy`).
+**Note:** Replace `<path_to_euroc_dataset>` with the actual path on your local machine.
 
 ### Run CPU Version
 
@@ -110,6 +110,31 @@ IMU Samples ───► ImuPreintegrator ─────────► Sliding
 
 **Note:** In this branch (klttrackercpu), KLT tracking has been moved back to CPU for performance evaluation and comparison with the full GPU pipeline.
 
+
+
+## Performance Benchmarks
+
+The following results were generated on an Apple M-series processor using the EuRoC V1_01_easy dataset (2912 frames).
+
+### Side-by-Side Profiling Summary
+
+| Stage | CPU Only Avg (ms) | Hybrid GPU Avg (ms) | Notes |
+|-------|-------------------|-------------------|-------|
+| Undistort | 0.27 | 1.06 | GPU includes getBytes sync overhead |
+| Detect | 0.31 | 0.18 | GPU Win: FAST + Harris scoring |
+| Stereo Match | 0.01 | 0.45 | Hybrid uses ORB descriptor extraction |
+| Track | 0.92 | 2.02 | CPU KLT tracking |
+| Optimize | 2.52 | 1.35 | GPU Win: Higher quality features |
+| Total AVG | 8.99 ms | 9.59 ms | |
+| Total MAX | 77.54 ms | 42.78 ms | GPU Win: Drastic reduction in jitter |
+
+### Summary Comparison
+
+**Latency Consistency:** The Hybrid GPU version is significantly more stable. While the CPU version is slightly faster on average, it suffers from massive latency spikes (up to 77ms). The GPU version caps worst-case latency at 42ms, ensuring a much smoother real-time experience.
+
+**Optimization Quality:** The GPU pipeline (Metal FAST + Harris Response) produces higher-quality feature localizations. This is evidenced by the Optimize stage dropping from 2.52ms to 1.35ms, as the backend solver converges much faster with the GPU-sourced data.
+
+**Resource Balancing:** By offloading Undistort and Detection to Metal, the CPU is freed up from feature extraction tasks. 
 ## Project Structure
 
 ```
