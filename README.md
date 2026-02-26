@@ -78,35 +78,11 @@ The pipeline can be run in either CPU mode (OpenCV vision) or GPU mode (Metal vi
 
 ### 1. CPU Pipeline Flow (vio-metal)
 
-```
-Stereo Images ──► OpenCV Remap (Undistort) ──► OpenCV FAST/ORB Detect
-                                                    │
-                                                    ├──► OpenCV Stereo Match
-                                                    │
-                                                    ├──► OpenCV KLT Track
-                                                    │
-                                                    ▼
-IMU Samples ───► ImuPreintegrator ─────────► Sliding Window Optimizer (Ceres)
-                                                    │
-                                                    ▼
-                                              SE3 Pose Output
-```
+![CPU Pipeline Flow](img/VIO-Metal-CPU.png)
 
 ### 2. Hybrid GPU + CPU Pipeline Flow (vio-metal-gpu)
 
-```
-Stereo Images ──► Metal Undistort ──► Metal FAST + Harris NMS ──► Metal ORB
-                                                                      │
-                                          Metal Stereo Matcher ◄──────┤
-                                                                      │
-                                              CPU KLT Track ◄─────────┤
-                                                  │
-                                                  ▼
-IMU Samples ───► ImuPreintegrator ─────────► Sliding Window Optimizer (Ceres)
-                                                    │
-                                                    ▼
-                                              SE3 Pose Output
-```
+![Hybrid GPU + CPU Pipeline Flow](img/VIO-Metal-GPU.png)
 
 **Note:** In this branch (klttrackercpu), KLT tracking has been moved back to CPU for performance evaluation and comparison with the full GPU pipeline.
 
