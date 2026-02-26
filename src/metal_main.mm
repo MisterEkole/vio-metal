@@ -5,7 +5,7 @@
 #include "core/KeyframePolicy.h"
 #include "vision/FeatureDetector.h"
 #include "vision/StereoMatcher.h"
-#include "vision/TemporalTracker.h"
+#include "vision/TemporalTracker.h" 
 #include "vision/FeatureManager.h"
 #include "imu/ImuPreintegrator.h"
 #include "imu/ImuTypes.h"
@@ -17,19 +17,15 @@
 #include <vector>
 #include <thread>
 #include <algorithm>
-#include <numeric>
 
 #import <Foundation/Foundation.h>
+#import <Metal/Metal.h>
 #include "metal/MetalContext.h"
 #include "metal/MetalUndistort.h"
 #include "metal/FastDetect.h"
 #include "metal/HarrisResponse.h"
-#include "metal/ORBDescriptor.h"
-#include "metal/StereoMatcher.h"
-#include "metal/KLTTracker.h"
 
 namespace {
-
 std::vector<cv::KeyPoint> cornersToCvKeypoints(const std::vector<vio::CornerPoint>& corners) {
     std::vector<cv::KeyPoint> kpts;
     kpts.reserve(corners.size());
@@ -48,12 +44,9 @@ std::vector<vio::CornerPoint> gridNMS(const std::vector<vio::CornerPoint>& corne
     std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) { 
         return a.response > b.response; 
     });
-    
     std::vector<vio::CornerPoint> result;
     size_t count = std::min((size_t)max_f, sorted.size());
-    for(size_t i = 0; i < count; ++i) {
-        result.push_back(sorted[i]);
-    }
+    for(size_t i = 0; i < count; ++i) result.push_back(sorted[i]);
     return result;
 }
 
@@ -71,16 +64,11 @@ vio::KeyframeState getGtState(const std::vector<vio::PoseStamped>& gt, uint64_t 
     }
     return state;
 }
-
-} 
+}
 
 int main(int argc, char** argv) {
     @autoreleasepool {
-    if (argc < 2) {
-        std::cerr << "Usage: ./vio-metal <path_to_euroc_sequence> [metallib_path]\n";
-        return -1;
-    }
-
+    if (argc < 2) return -1;
     std::string dataset_path = argv[1];
     std::string metallib_path = (argc >= 3) ? argv[2] : "shaders.metallib";
 
@@ -88,13 +76,12 @@ int main(int argc, char** argv) {
     vio::StereoCalibration calib = loader.getCalibration();
     vio::Profiler profiler;
 
-    // --- 1. RECTIFICATION SETUP (CPU) ---
+    // --- RECTIFICATION SETUP ---
     cv::Mat K_l = (cv::Mat_<double>(3,3) << calib.intrinsics_left[0], 0, calib.intrinsics_left[2], 0, calib.intrinsics_left[1], calib.intrinsics_left[3], 0, 0, 1);
     cv::Mat D_l = (cv::Mat_<double>(4,1) << calib.distortion_left[0], calib.distortion_left[1], calib.distortion_left[2], calib.distortion_left[3]);
     cv::Mat K_r = (cv::Mat_<double>(3,3) << calib.intrinsics_right[0], 0, calib.intrinsics_right[2], 0, calib.intrinsics_right[1], calib.intrinsics_right[3], 0, 0, 1);
     cv::Mat D_r = (cv::Mat_<double>(4,1) << calib.distortion_right[0], calib.distortion_right[1], calib.distortion_right[2], calib.distortion_right[3]);
-
-    cv::Mat R1, R2, P1, P2, Q;
+    
     cv::Mat R_rl_cv(3, 3, CV_64F), t_rl_cv(3, 1, CV_64F);
     Eigen::Matrix3d R_rl_eigen = calib.T_cam1_cam0.block<3,3>(0,0);
     Eigen::Vector3d t_rl_eigen = calib.T_cam1_cam0.block<3,1>(0,3);
@@ -103,28 +90,23 @@ int main(int argc, char** argv) {
         t_rl_cv.at<double>(r,0) = t_rl_eigen(r);
     }
 
-    cv::stereoRectify(K_l, D_l, K_r, D_r, cv::Size(752, 480), R_rl_cv, t_rl_cv, R1, R2, P1, P2, Q, cv::CALIB_ZERO_DISPARITY, 0, cv::Size(752, 480));
-    
-    cv::Mat map_x_l, map_y_l, map_x_r, map_y_r;
+    cv::Mat R1, R2, P1, P2, Q, map_x_l, map_y_l, map_x_r, map_y_r;
+    cv::stereoRectify(K_l, D_l, K_r, D_r, cv::Size(752, 480), R_rl_cv, t_rl_cv, R1, R2, P1, P2, Q);
     cv::initUndistortRectifyMap(K_l, D_l, R1, P1, cv::Size(752, 480), CV_32FC1, map_x_l, map_y_l);
     cv::initUndistortRectifyMap(K_r, D_r, R2, P2, cv::Size(752, 480), CV_32FC1, map_x_r, map_y_r);
 
-    double fx_rect = P1.at<double>(0,0);
-    calib.intrinsics_left = Eigen::Vector4d(fx_rect, P1.at<double>(1,1), P1.at<double>(0,2), P1.at<double>(1,2));
-    double baseline = -P2.at<double>(0,3) / fx_rect;
-    calib.T_cam1_cam0 = Eigen::Matrix4d::Identity();
-    calib.T_cam1_cam0(0,3) = -baseline;
-
-    // --- 2. METAL INITIALIZATION ---
+    // --- INITIALIZATION ---
     vio::MetalContext* metal_ctx = new vio::MetalContext();
     vio::MetalUndistort* und_l = new vio::MetalUndistort(metal_ctx, map_x_l, map_y_l, 752, 480, metallib_path);
     vio::MetalUndistort* und_r = new vio::MetalUndistort(metal_ctx, map_x_r, map_y_r, 752, 480, metallib_path);
-    vio::KLTConfig klt_cfg;
-    vio::MetalKLTTracker* klt = new vio::MetalKLTTracker(metal_ctx, 752, 480, metallib_path, klt_cfg);
+    
+    vio::TemporalTracker cpu_tracker; 
+    vio::StereoMatcher cpu_stereo; 
+    cv::Ptr<cv::ORB> orb_extractor = cv::ORB::create(1000); 
+
     vio::MetalFastDetector* fast = new vio::MetalFastDetector(metal_ctx, 752, 480, metallib_path);
     vio::MetalHarrisResponse* harris = new vio::MetalHarrisResponse(metal_ctx, metallib_path);
 
-    // --- 3. VIO PIPELINE OBJECTS ---
     vio::FeatureManager feature_manager;
     vio::VioOptimizer optimizer(vio::VioOptimizer::Config{}, calib);
     vio::ImuPreintegrator preintegrator(vio::ImuNoiseParams{}, Eigen::Vector3d::Zero(), Eigen::Vector3d::Zero());
@@ -132,12 +114,16 @@ int main(int argc, char** argv) {
     vio::VioVisualizer visualizer;
     auto ground_truth = loader.loadGroundTruth();
 
+    cv::Mat left_undist_cpu(480, 752, CV_8UC1);
+    cv::Mat right_undist_cpu(480, 752, CV_8UC1); 
+    cv::Mat prev_left_undist_cpu;
+
     std::thread vio_thread([&]() {
         @autoreleasepool {
             bool initialized = false;
             uint64_t frame_count = 0;
             uint64_t last_imu_ts = 0;
-            int frames_since_kf = 0;
+            uint64_t frames_since_kf = 0;
 
             while (loader.hasNext() && visualizer.isRunning()) {
                 if (loader.nextIsImu()) {
@@ -155,80 +141,82 @@ int main(int argc, char** argv) {
                 vio::StereoFrame frame = loader.getNextStereoFrame();
                 profiler.beginFrame(frame_count, frame.timestamp_ns);
 
-                // --- STAGE 2: GPU WORK (SYNCHRONOUS FOR ACCURATE PROFILING) ---
                 
-                // 1. Undistort
+                vio::KeyframeState current_gt = getGtState(ground_truth, frame.timestamp_ns);
+
                 profiler.startStage("undistort");
-                und_l->encodeUndistort(frame.left);  
-                und_r->encodeUndistort(frame.right); 
-                metal_ctx->waitForLastBuffer();
-                profiler.endStage("undistort");
+                und_l->encodeUndistort(frame.left);
+                und_r->encodeUndistort(frame.right);
+                metal_ctx->waitForLastBuffer(); 
                 
-                // 2. KLT Track
-                if (initialized) {
-                    profiler.startStage("temporal_track");
-                    klt->buildPyramid(frame.left.data, (int)frame.left.step, false); 
-                    
-                    std::vector<cv::Point2f> pts_to_track = feature_manager.getCurrentPoints();
-                    if(!pts_to_track.empty()) {
-                        klt->encodeTrack(pts_to_track);
-                    }
-                    metal_ctx->waitForLastBuffer();
-                    profiler.endStage("temporal_track");
-                }
+                id<MTLTexture> texL = (__bridge id<MTLTexture>)und_l->outputTexture();
+                id<MTLTexture> texR = (__bridge id<MTLTexture>)und_r->outputTexture();
+                [texL getBytes:left_undist_cpu.data bytesPerRow:752 fromRegion:MTLRegionMake2D(0,0,752,480) mipmapLevel:0];
+                [texR getBytes:right_undist_cpu.data bytesPerRow:752 fromRegion:MTLRegionMake2D(0,0,752,480) mipmapLevel:0];
+                profiler.endStage("undistort");
 
-                auto current_gt = getGtState(ground_truth, frame.timestamp_ns);
-
-                // --- STAGE 3: PROCESS RESULTS ---
                 if (!initialized) {
                     profiler.startStage("detect");
                     auto raw = fast->detect(und_l->outputTexture());
                     harris->score(und_l->outputTexture(), raw);
                     metal_ctx->waitForLastBuffer();
-                    profiler.endStage("detect");
-
                     auto nms = gridNMS(raw, 400);
-                    optimizer.initialize(getGtState(ground_truth, frame.timestamp_ns));
-                    feature_manager.addNewFeatures(frame.timestamp_ns, cornersToCvKeypoints(nms), cv::Mat(), {}); 
+                    std::vector<cv::KeyPoint> kpts_l = cornersToCvKeypoints(nms);
                     
-                    klt->buildPyramid(frame.left.data, (int)frame.left.step, true);
+                    cv::Mat desc_l, desc_r;
+                    std::vector<cv::KeyPoint> kpts_r_all; 
+                    orb_extractor->detectAndCompute(right_undist_cpu, cv::noArray(), kpts_r_all, desc_r);
+                    orb_extractor->compute(left_undist_cpu, kpts_l, desc_l);
+                    
+                    auto initial_matches = cpu_stereo.match(kpts_l, desc_l, kpts_r_all, desc_r, calib);
+                    
+                    optimizer.initialize(current_gt); // Use GT for initialization
+                    feature_manager.addNewFeatures(frame.timestamp_ns, kpts_l, desc_l, initial_matches); 
+                    
+                    prev_left_undist_cpu = left_undist_cpu.clone();
                     initialized = true;
+                    profiler.endStage("detect");
                 } else {
-                    auto res = klt->getResults(); 
-                    
-                    // Convert tracked points to cv::Point2f
-                    std::vector<cv::Point2f> tracked_points;
-                    tracked_points.reserve(res.tracked_x.size());
-                    for (size_t i = 0; i < res.tracked_x.size(); ++i) {
-                        tracked_points.emplace_back(res.tracked_x[i], res.tracked_y[i]);
-                    }
+                    profiler.startStage("temporal_track");
+                    std::vector<cv::Point2f> pts_to_track = feature_manager.getCurrentPoints();
+                    auto res = cpu_tracker.track(prev_left_undist_cpu, left_undist_cpu, pts_to_track);
+                    feature_manager.updateTracks(frame.timestamp_ns, feature_manager.getCurrentIds(), res.tracked_points, res.status);
+                    profiler.endStage("temporal_track");
 
-                    feature_manager.updateTracks(
-                        frame.timestamp_ns, 
-                        feature_manager.getCurrentIds(), 
-                        tracked_points, 
-                        res.status
-                    );
-                    
                     frames_since_kf++;
-                    if (kf_policy.shouldInsertKeyframe(res.num_tracked, 0.5, frames_since_kf)) {
+                    if (kf_policy.shouldInsertKeyframe(res.num_tracked, 0.5, (int)frames_since_kf)) {
+                        profiler.startStage("detect");
+                        auto raw = fast->detect(und_l->outputTexture());
+                        harris->score(und_l->outputTexture(), raw);
+                        metal_ctx->waitForLastBuffer();
+                        auto nms = gridNMS(raw, 150);
+                        std::vector<cv::KeyPoint> kpts_l = cornersToCvKeypoints(nms);
+                        profiler.endStage("detect");
+
+                        profiler.startStage("stereo_match");
+                        cv::Mat desc_l, desc_r;
+                        std::vector<cv::KeyPoint> kpts_r_all;
+                        orb_extractor->detectAndCompute(right_undist_cpu, cv::noArray(), kpts_r_all, desc_r);
+                        orb_extractor->compute(left_undist_cpu, kpts_l, desc_l);
+                        
+                        auto matches = cpu_stereo.match(kpts_l, desc_l, kpts_r_all, desc_r, calib);
+                        feature_manager.addNewFeatures(frame.timestamp_ns, kpts_l, desc_l, matches);
+                        profiler.endStage("stereo_match");
+
                         profiler.startStage("optimize");
-                        optimizer.addKeyframe(frame.timestamp_ns, 
-                                            preintegrator.getResult(), 
-                                            feature_manager.getObservationsForFrame(frame.timestamp_ns));
+                        optimizer.addKeyframe(frame.timestamp_ns, preintegrator.getResult(), feature_manager.getObservationsForFrame(frame.timestamp_ns));
                         optimizer.optimize();
                         profiler.endStage("optimize");
 
-                        auto latest = optimizer.latestState();
-                        preintegrator.reset(latest.bias_gyro, latest.bias_accel);
+                        preintegrator.reset(optimizer.latestState().bias_gyro, optimizer.latestState().bias_accel);
                         frames_since_kf = 0;
                     }
-                    
-                    klt->buildPyramid(frame.left.data, (int)frame.left.step, true);
+                    prev_left_undist_cpu = left_undist_cpu.clone();
                 }
 
+                // --- PLOTTING LOGIC ---
                 visualizer.addEstimate(optimizer.latestState().position);
-                visualizer.addGroundTruth(current_gt.position);
+                visualizer.addGroundTruth(current_gt.position); // Feed GT and estimates to visualizer
                 
                 profiler.endFrame();
                 frame_count++;
@@ -241,7 +229,7 @@ int main(int argc, char** argv) {
     visualizer.run();
     if (vio_thread.joinable()) vio_thread.join();
 
-    delete und_l; delete und_r; delete klt; delete fast; delete harris; delete metal_ctx;
+    delete und_l; delete und_r; delete fast; delete harris; delete metal_ctx;
     }
     return 0;
 }
