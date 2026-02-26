@@ -1,13 +1,7 @@
-<INSERT_FULL_README_CONTENT_HERE_OF_README.md>
+# README.md
 
 ## Architecture & Data Flow
 
-1. **Input Source**
-    
-    Stereo Images
-    
-2. **Metal GPU Pipeline Flow (vio-metal-gpu)**
+The Metal GPU Pipeline Flow shows KLT Tracking moved to CPU.
 
-    Stereo Images → Metal Undistort → Metal FAST + Harris NMS → Metal ORB → Metal Stereo Matcher
-    
-3. **Metal KLT Tracker** (now moved to CPU)
+... (other content) ...
