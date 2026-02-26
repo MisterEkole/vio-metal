@@ -14,6 +14,7 @@ public:
     
     void setLastBuffer(void* buf);
     void waitForLastBuffer();
+    
 
     void* newSharedBuffer(size_t length);
     void* loadLibrary(const std::string& path);

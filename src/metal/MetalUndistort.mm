@@ -89,7 +89,7 @@ cv::Mat MetalUndistort::getOutputMat() {
 
 cv::Mat MetalUndistort::undistort(const cv::Mat& input) {
     encodeUndistort(input);
-    context_->waitForGPU(); // Force wait 
+    context_->waitForLastBuffer(); // Force wait 
     return getOutputMat();
 }
 
