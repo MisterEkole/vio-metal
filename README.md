@@ -82,7 +82,7 @@ The pipeline can be run in either CPU mode (OpenCV vision) or GPU mode (Metal vi
 
 ### 2. Hybrid GPU + CPU Pipeline Flow (vio-metal-gpu)
 
-![Hybrid GPU + CPU Pipeline Flow](img/VIO-Metal-GPU.png)
+![Hybrid GPU + CPU Pipeline Flow](img/VIO-Metal GPU.png)
 
 **Note:** In this branch (klttrackercpu), KLT tracking has been moved back to CPU for performance evaluation and comparison with the full GPU pipeline.
 
