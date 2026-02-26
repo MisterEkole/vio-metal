@@ -3,10 +3,8 @@
 #include <opencv2/opencv.hpp>
 #include <string>
 
-// Forward declare the MetalContext so we don't need to import its Obj-C headers here
 namespace vio { class MetalContext; }
 
-// Use this macro to hide Objective-C types from pure C++ files
 #ifdef __OBJC__
 #import <Metal/Metal.h>
 typedef id<MTLComputePipelineState> PipelinePtr;
@@ -28,11 +26,17 @@ public:
 
     ~MetalUndistort() = default;
 
+    // Asynchronous Flow
+    void encodeUndistort(const cv::Mat& input);
+    cv::Mat getOutputMat();
+
+    // Legacy Synchronous Flow
     cv::Mat undistort(const cv::Mat& input);
 
     double lastGpuTimeMs() const { return last_gpu_ms_; }
     bool isReady() const { return ready_; }
-    void* outputTexture() const{
+    
+    void* outputTexture() const {
         #ifdef __OBJC__
             return (__bridge void*)output_texture_;
         #else
@@ -43,7 +47,6 @@ public:
 private:
     MetalContext* context_; 
     
-    // These are now safe for both C++ and Obj-C++ files
     PipelinePtr pipeline_;
     TexturePtr map_x_texture_;
     TexturePtr map_y_texture_;
@@ -55,4 +58,4 @@ private:
     bool ready_ = false;
 };
 
-} 
+}

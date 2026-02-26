@@ -1,92 +1,81 @@
 #pragma once
-
 #include <vector>
 #include <string>
 #include <cstdint>
-
-namespace vio { class MetalContext; }
+#include <opencv2/core.hpp>
 
 #ifdef __OBJC__
 #import <Metal/Metal.h>
-typedef id<MTLComputePipelineState> PipelinePtr;
-typedef id<MTLBuffer>              BufferPtr;
-typedef id<MTLTexture>             TexturePtr;
+typedef id<MTLComputePipelineState> KLTPipelinePtr;
+typedef id<MTLTexture> KLTTexturePtr;
+typedef id<MTLBuffer> BufferPtr;
 #else
-typedef void* PipelinePtr;
+typedef void* KLTPipelinePtr;
+typedef void* KLTTexturePtr;
 typedef void* BufferPtr;
-typedef void* TexturePtr;
 #endif
 
 namespace vio {
 
+class MetalContext;
+
 struct KLTConfig {
-    int   max_iterations = 30;
-    float epsilon        = 0.01f;   // convergence threshold (pixels)
-    int   win_radius     = 10;      // 10 → 21×21 window
-    int   max_level      = 3;       // pyramid levels 0-3
-    float min_eigenvalue = 1e-4f;   // reject textureless patches
-    float fb_threshold   = 1.0f;    // forward-backward consistency (pixels)
+    float fb_threshold = 1.0f;
+    int max_iterations = 20;
+    float epsilon = 0.01f;
+    int win_radius = 15;
+    int max_level = 3;
+    float min_eigenvalue = 0.001f;
 };
 
 struct KLTResult {
-    std::vector<float> tracked_x;     // output x-coordinates
-    std::vector<float> tracked_y;     // output y-coordinates
-    std::vector<bool>  status;        // true = successfully tracked
+    std::vector<float> tracked_x;
+    std::vector<float> tracked_y;
+    std::vector<bool> status;
     int num_tracked = 0;
 };
 
 class MetalKLTTracker {
 public:
-    MetalKLTTracker(MetalContext* context,
-                    int width, int height,
-                    const std::string& metallib_path,
-                    const KLTConfig& config = KLTConfig());
+    MetalKLTTracker(MetalContext* context, int width, int height, 
+                    const std::string& metallib_path, const KLTConfig& config = KLTConfig());
+    ~MetalKLTTracker();
 
-    ~MetalKLTTracker() = default;
-
-    /// Build image pyramid for a frame (call once per frame)
-    /// Returns an opaque handle to the pyramid textures
     void buildPyramid(const uint8_t* image_data, int stride, bool is_previous);
-
-    /// Track points from previous frame to current frame
-    /// with forward-backward validation
-    KLTResult track(const std::vector<float>& prev_x,
-                    const std::vector<float>& prev_y);
-
-    double lastGpuTimeMs() const { return last_gpu_ms_; }
-    bool   isReady()       const { return ready_; }
+    
+    // Updated to match the implementation in KLTTracker.mm
+    void encodeTrack(const std::vector<cv::Point2f>& points);
+   
+    
+    KLTResult getResults();
+    void swapPyramids();
 
 private:
+    void dispatchKLT(KLTTexturePtr const* from_pyr, KLTTexturePtr const* to_pyr,
+                    BufferPtr in_pts, BufferPtr out_pts, BufferPtr status_buf,
+                    uint32_t n, void* cmdBufPtr);
+    
+    KLTTexturePtr createLevelTexture(int w, int h);
+
     MetalContext* context_;
-
-    PipelinePtr klt_pipeline_;
-
-    // Two sets of pyramid textures: previous and current frame
-    TexturePtr prev_pyramid_[4];
-    TexturePtr curr_pyramid_[4];
-
-    // Point buffers
+    KLTPipelinePtr klt_pipeline_;
+    KLTTexturePtr prev_pyramid_[4];
+    KLTTexturePtr curr_pyramid_[4];
+    
     BufferPtr prev_pts_buffer_;
     BufferPtr curr_pts_buffer_;
-    BufferPtr back_pts_buffer_;    // for forward-backward validation
+    BufferPtr back_pts_buffer_;
     BufferPtr status_buffer_;
     BufferPtr back_status_buffer_;
     BufferPtr params_buffer_;
 
+    // Added missing members required by KLTTracker.mm
+    bool ready_ = false;
+    std::vector<float> cached_px_, cached_py_;
     int width_, height_;
     KLTConfig config_;
-    uint32_t max_points_ = 1000;
-    double   last_gpu_ms_ = 0.0;
-    bool     ready_ = false;
-
-    /// Dispatch the KLT kernel in one direction
-    void dispatchKLT(__strong TexturePtr* from_pyr, __strong TexturePtr* to_pyr,
-                     BufferPtr in_pts, BufferPtr out_pts,
-                     BufferPtr status_buf, uint32_t n_points,
-                     id<MTLCommandBuffer> cmdBuf);
-
-    /// Create a single pyramid level texture
-    TexturePtr createLevelTexture(int w, int h);
+    uint32_t last_n_points_ = 0;
+    const uint32_t max_points_ = 1000;
 };
 
-}
+} // namespace vio
