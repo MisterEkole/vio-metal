@@ -55,7 +55,11 @@ void VioOptimizer::addKeyframe(
     observations_[timestamp] = observations;
 
     if (static_cast<int>(window_.size()) > config_.window_size) {
-        marginalize();
+        observations_.erase(window_.front().timestamp);
+        window_.pop_front();
+        if (!preint_between_.empty()) {
+            preint_between_.pop_front();
+        }
     }
 }
 
@@ -63,7 +67,7 @@ KeyframeState VioOptimizer::latestState() const {
     return window_.empty() ? KeyframeState() : window_.back();
 }
 
-// Pack keyframe into ambient vector: [p(3), q_xyzw(4), v(3), bg(3), ba(3)]
+// Pack keyframe state into [p(3), q_xyzw(4), v(3), bg(3), ba(3)]
 static Eigen::VectorXd packState(const KeyframeState& s) {
     Eigen::VectorXd x(16);
     x.head<3>() = s.position;
@@ -80,7 +84,7 @@ static Eigen::VectorXd packState(const KeyframeState& s) {
 void VioOptimizer::marginalize() {
     if (window_.size() <= 1) return;
 
-    // Schur complement: marginalize window_[0], keep window_[1] as boundary
+    // Schur complement: marginalize window_[0], keep window_[1]
     const auto& state0 = window_[0];
     const auto& state1 = window_[1];
 
@@ -139,7 +143,6 @@ void VioOptimizer::marginalize() {
     Eigen::Matrix2d sqrt_info_mono = Eigen::Matrix2d::Identity() * (1.0 / 1.5);
     Eigen::Matrix4d sqrt_info_stereo = Eigen::Matrix4d::Identity() * (1.0 / 1.5);
 
-    // Reserve storage to prevent pointer invalidation
     auto obs_it = observations_.find(state0.timestamp);
     int num_lm = 0;
     if (obs_it != observations_.end()) {
@@ -262,7 +265,7 @@ void VioOptimizer::marginalize() {
         }
     }
 
-    // Prune loop constraints for removed keyframe
+    // Prune loop constraints for removed frame
     uint64_t removed_ts = window_.front().timestamp;
     loop_constraints_.erase(
         std::remove_if(loop_constraints_.begin(), loop_constraints_.end(),
@@ -350,25 +353,14 @@ KeyframeState VioOptimizer::optimize() {
         }
     }
 
-    // Marginalization prior
-    if (margin_info_.hasPrior()) {
-        auto* margin_cf = new ceres::AutoDiffCostFunction<
-            MarginalizationFactor, 15, 3, 4, 9>(
-            new MarginalizationFactor(margin_info_.sqrtInfo(),
-                                      margin_info_.linearizationPoint(),
-                                      margin_info_.residualOffset()));
-        problem.AddResidualBlock(margin_cf, nullptr,
-                                 params[0].p, params[0].q, params[0].vba);
-    } else {
-        problem.SetParameterBlockConstant(params[0].p);
-        problem.SetParameterBlockConstant(params[0].q);
-        problem.SetParameterBlockConstant(params[0].vba);
-    }
+    // Fix oldest frame as gauge reference
+    problem.SetParameterBlockConstant(params[0].p);
+    problem.SetParameterBlockConstant(params[0].q);
+    problem.SetParameterBlockConstant(params[0].vba);
 
-    // Landmarks — cap to max_landmarks by selecting those with most observations
+    // Select top landmarks by observation count
     std::unordered_map<uint64_t, std::array<double, 3>> lm_params;
     {
-        // Count observations per landmark across the window
         std::unordered_map<uint64_t, int> obs_count;
         for (const auto& [ts, obs_list] : observations_) {
             for (const auto& obs : obs_list) {
@@ -376,7 +368,6 @@ KeyframeState VioOptimizer::optimize() {
             }
         }
 
-        // Collect valid landmark IDs with their observation counts
         struct LmCandidate { uint64_t id; int count; };
         std::vector<LmCandidate> candidates;
         for (const auto& [id, pos] : landmarks_) {
@@ -386,7 +377,6 @@ KeyframeState VioOptimizer::optimize() {
             if (cnt > 0) candidates.push_back({id, cnt});
         }
 
-        // Sort by observation count descending — landmarks seen in more keyframes are more valuable
         std::sort(candidates.begin(), candidates.end(),
                   [](const LmCandidate& a, const LmCandidate& b) { return a.count > b.count; });
 
@@ -410,7 +400,7 @@ KeyframeState VioOptimizer::optimize() {
     Eigen::Matrix2d sqrt_info_mono = Eigen::Matrix2d::Identity() * (1.0 / 1.5);
     Eigen::Matrix4d sqrt_info_stereo = Eigen::Matrix4d::Identity() * (1.0 / 1.5);
 
-    // Depth filter: disable if too few landmarks pass to prevent going blind
+    // Depth filter: skip if too few landmarks pass
     int depth_pass_count = 0;
     for (int i = 0; i < n; ++i) {
         auto obs_it = observations_.find(window_[i].timestamp);
@@ -493,6 +483,9 @@ KeyframeState VioOptimizer::optimize() {
     options.max_num_iterations = config_.max_iterations;
     options.num_threads = 8;
     options.minimizer_progress_to_stdout = false;
+    if (config_.use_dogleg) {
+        options.trust_region_strategy_type = ceres::DOGLEG;
+    }
 
     ceres::Solver::Summary summary;
     ceres::Solve(options, &problem, &summary);
@@ -504,23 +497,16 @@ KeyframeState VioOptimizer::optimize() {
     last_summary_.num_landmarks = static_cast<int>(lm_params.size());
     last_summary_.success = (summary.termination_type == ceres::CONVERGENCE);
 
-    // Divergence detection: reject solution if position jumps too far
     {
         Eigen::Vector3d optimized_pos = Eigen::Map<Eigen::Vector3d>(params[n-1].p);
         Eigen::Vector3d pre_opt_pos = window_.back().position;
         double jump = (optimized_pos - pre_opt_pos).norm();
-
-        if (jump > config_.max_position_jump) {
-            std::cerr << "[VioOptimizer] REJECT: position jumped "
-                      << jump << "m (limit=" << config_.max_position_jump
-                      << "m). Keeping IMU prediction.\n";
-            last_summary_.success = false;
-            margin_info_.resetPrior();
-            return window_.back();
+        if (jump > 1.0) {
+            std::printf("[VioOptimizer] correction: %.2fm\n", jump);
         }
     }
 
-    // Write-back (protect biases if too few visual constraints)
+    // Protect biases if too few visual constraints
     bool trust_vision = (vision_residual_count >= 20);
 
     for (int i = 0; i < n; ++i) {
@@ -540,7 +526,7 @@ KeyframeState VioOptimizer::optimize() {
         }
     }
 
-    // Update landmarks (only from the capped set that was optimized)
+    // Write back optimized landmarks
     for (auto& [id, pos] : landmarks_) {
         auto it = lm_params.find(id);
         if (it != lm_params.end()) {
@@ -548,7 +534,7 @@ KeyframeState VioOptimizer::optimize() {
         }
     }
 
-    // Post-optimization: prune landmarks with high reprojection error (>15px)
+    // Prune landmarks with >15px reprojection error or behind camera
     {
         const auto& latest = window_.back();
         std::vector<uint64_t> to_remove;

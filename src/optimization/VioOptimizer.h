@@ -37,12 +37,12 @@ class VioOptimizer {
 public:
     struct Config {
         int window_size = 20;
-        int max_iterations = 20;
+        int max_iterations = 100;
         double huber_reprojection = 5.0;
         double huber_imu = 10.0;
         bool use_dogleg = false;
         int max_landmarks = 250;
-        double max_position_jump = 2.0;   // meters — reject solution if position jumps more than this
+        double max_position_jump = 2.0;   // meters
     };
 
     struct OptimizeSummary {

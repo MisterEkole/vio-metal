@@ -749,3 +749,176 @@ The GPU pipeline now processes all 2912 frames of V1_01_easy without hanging. La
 | `eval/evaluate.sh` | Added `cpu`/`gpu` mode selection; GT-to-TUM conversion for evo compatibility |
 | `eval/plot_cost.py` | Made `plt.show()` conditional to avoid blocking in headless mode |
 | `CMakeLists.txt` | Added `src/vision/LoopDetector.cpp` to `VIO_SOURCES` |
+
+---
+
+# v0.2.0 - Fixes After v0.1.0
+
+These changes reduced the final position error on EuRoC V1_01_easy from ~94 km to ~4.3 m (a 21,000x improvement).
+
+---
+
+## 10. Wrong Distortion Model for Stereo Rectification
+
+### Problem
+
+EuRoC cameras use the **equidistant (fisheye)** distortion model with 4 parameters (k1, k2, k3, k4). The pipeline was calling OpenCV's standard pinhole functions:
+
+```cpp
+cv::stereoRectify(K_left, dist_left, K_right, dist_right, ...);
+cv::initUndistortRectifyMap(K_left, dist_left, R1, P1, ...);
+```
+
+These functions assume a radial-tangential distortion model. Applying them to fisheye coefficients produces:
+- **Incorrect undistortion maps** — pixels are remapped to wrong locations, so rectified images are geometrically distorted.
+- **Wrong projection matrix P1** — the resulting focal length (fx=436) was neither the raw value (458) nor the correct rectified value (369). Every reprojection in the optimizer used the wrong intrinsics.
+- **Wrong rectification rotations R1/R2** — the epipolar alignment was approximate, degrading stereo matching and triangulation accuracy.
+
+This was the **root cause** of the trajectory divergence. With wrong intrinsics and distorted images, the reprojection errors grew monotonically and the optimizer could not converge to a correct solution.
+
+### Fix
+
+Switched both pipelines to OpenCV's fisheye module:
+
+**`src/main.mm`:**
+```cpp
+cv::fisheye::stereoRectify(K_left, dist_left, K_right, dist_right,
+                  cv::Size(752, 480), R_rl_cv, t_rl_cv,
+                  R1, R2, P1, P2, Q,
+                  cv::CALIB_ZERO_DISPARITY, cv::Size(752, 480));
+
+cv::fisheye::initUndistortRectifyMap(K_left, dist_left, R1, P1,
+                  cv::Size(752, 480), CV_32FC1, map_x_left, map_y_left);
+cv::fisheye::initUndistortRectifyMap(K_right, dist_right, R2, P2,
+                  cv::Size(752, 480), CV_32FC1, map_x_right, map_y_right);
+```
+
+Same change in **`src/metal_main.mm`**.
+
+After the fix, P1 reports `fx=368.651` (correct for the fisheye→pinhole rectification with `balance=0`), and self-reprojection errors at the anchor keyframe drop to ~0.1 px.
+
+### Impact
+
+| Metric | Before | After |
+|--------|--------|-------|
+| Rectified fx | 436.2 (wrong) | 368.7 (correct) |
+| Self-reprojection error (KF0) | ~1.6 px | ~0.1 px |
+| Cross-frame reproj error (2 KF) | ~1.6 px avg | ~0.11 px avg |
+
+---
+
+## 11. First Keyframe Observations Missing from Optimizer
+
+### Problem
+
+At initialization, the pipeline detected features and stereo-matched them at the first frame (KF0), but **never registered KF0's pixel observations with the optimizer**. The call sequence was:
+
+```cpp
+optimizer.initialize(init_state);                    // creates KF0 in the window
+feature_manager.addNewFeatures(ts, kpts, desc, sm);  // triangulates landmarks
+// ... missing: no addObservations / addKeyframe for KF0
+```
+
+When the second keyframe (KF1) was added and `optimize()` ran, the optimizer had:
+- KF0 fixed as gauge (correct pose from ground truth)
+- KF0 had **zero observations** in `observations_` → no vision residuals anchored to KF0
+- Landmarks triangulated at KF0 were only constrained by their observations at KF1+
+
+Without KF0's observations, the fundamental triangulation constraint was lost. Landmark positions floated freely relative to the fixed anchor, and subsequent optimizations started from weak initial conditions that snowballed into drift.
+
+### Fix
+
+After feature detection at initialization, store KF0's observations and initial landmark world positions in the optimizer:
+
+**`src/main.mm`:**
+```cpp
+feature_manager.addNewFeatures(frame.timestamp_ns, det.keypoints, det.descriptors, stereo_matches);
+
+// NEW: register KF0's observations and landmarks
+optimizer.addObservations(frame.timestamp_ns,
+    feature_manager.getObservationsForFrame(frame.timestamp_ns));
+auto lm_world_init = feature_manager.getInitializedLandmarksWorld(
+    init_state.position, init_state.rotation, calib.T_cam0_imu);
+optimizer.setLandmarks(lm_world_init);
+```
+
+Same change in **`src/metal_main.mm`**.
+
+### Impact
+
+At the first 2-keyframe optimization, KF0 now contributes ~130 vision residuals (avg error 0.10 px), properly anchoring all landmark positions to the ground-truth initial pose.
+
+---
+
+## 12. Position Jump Rejection Caused a Death Spiral
+
+### Problem
+
+The optimizer had a safety check that rejected solutions where the latest keyframe position moved more than 2 m from the IMU prediction:
+
+```cpp
+if (jump > config_.max_position_jump) {
+    // Reject: keep IMU prediction, reset marginalization prior
+    return window_.back();
+}
+```
+
+This created a **feedback loop**:
+1. As the sliding window moves, the fixed-oldest-frame gauge causes natural position corrections >2 m.
+2. The safety check rejects the optimizer's correction and keeps the drifting IMU prediction.
+3. The next optimization sees an even larger discrepancy (since the IMU continued to drift).
+4. All subsequent corrections are also rejected → system is locked into pure dead-reckoning.
+
+In practice, the first rejection happened around frame 80, and from that point on **every single optimization was rejected**. The system diverged to tens of kilometers.
+
+### Fix
+
+Removed the position jump rejection. The optimizer's converged solution should be trusted. The safety check is replaced with a logging statement for monitoring:
+
+**`src/optimization/VioOptimizer.cpp`:**
+```cpp
+// Log position correction magnitude (no rejection — trust the optimizer)
+double jump = (optimized_pos - pre_opt_pos).norm();
+if (jump > 1.0) {
+    std::printf("[VioOptimizer] correction: %.2fm\n", jump);
+}
+```
+
+### Impact
+
+With the rejection removed, the optimizer can freely correct the latest pose to be consistent with the sliding window. Corrections of 1-7 m are normal as the gauge frame shifts.
+
+---
+
+## Current State and Remaining Issues
+
+### Results on EuRoC V1_01_easy
+
+| Metric | v0.1.0 | v0.2.0 |
+|--------|--------|--------|
+| Final position error | ~94,000 m | **4.3 m** |
+| Horizontal error (x,y) | catastrophic | **0.31 m** |
+| Vertical error (z) | catastrophic | **4.32 m** |
+| Reprojection error (2 KF) | ~1.6 px | ~0.11 px |
+
+### Remaining vertical drift
+
+The 4.3 m drift is almost entirely in Z (vertical). This is consistent with accelerometer bias drift — without marginalization, the system has no long-term memory to constrain the vertical direction.
+
+### Marginalization is disabled
+
+The Schur complement marginalization prior was tested but currently causes a secondary failure mode: the prior becomes too stiff over time and fights against vision observations, eventually causing all landmarks to be pruned (>15 px error threshold), which leaves the system blind. The prior then dominates a vision-less optimization, driving divergence.
+
+The system currently uses simple window sliding (drop oldest frame, fix new oldest as gauge). This sacrifices information from dropped frames but avoids the toxic prior problem.
+
+Fixing marginalization is the next priority for achieving sub-meter accuracy.
+
+---
+
+## v0.2.0 Summary of Files Changed
+
+| File | Change |
+|------|--------|
+| `src/main.mm` | Switched to `cv::fisheye::stereoRectify` / `initUndistortRectifyMap`; added KF0 observation registration |
+| `src/metal_main.mm` | Same fisheye and KF0 observation fixes |
+| `src/optimization/VioOptimizer.cpp` | Removed position jump rejection; restored landmark pruning (15 px); simple window sliding (marginalization disabled) |

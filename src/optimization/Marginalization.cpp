@@ -16,10 +16,7 @@ void MarginalizationInfo::setPrior(const Eigen::MatrixXd& H, const Eigen::Vector
     Eigen::VectorXd eigenvalues = solver.eigenvalues();
     Eigen::MatrixXd eigenvectors = solver.eigenvectors();
 
-    // Clamp eigenvalues: minimum for numerical stability, maximum to prevent
-    // the prior from becoming overly stiff and dominating vision observations.
-    // Without a max clamp, eigenvalues grow unboundedly through repeated
-    // marginalization, making the prior fight with current observations.
+    // Clamp eigenvalues: min for stability, max to prevent prior dominance
     double max_eigenvalue = eigenvalues.maxCoeff();
     double min_allowed = max_eigenvalue * 1e-2;
     if (min_allowed < 1e-2) min_allowed = 1e-2;

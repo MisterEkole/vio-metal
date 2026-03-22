@@ -133,29 +133,42 @@ All output files are timestamped to prevent overwriting between runs.
 
 
 
-## Performance Benchmarks
+## Results
 
-The following results were generated on an Apple M-series processor using the EuRoC V1_01_easy dataset (2912 frames).
+Full evaluation results comparing both pipelines on EuRoC V1_01_easy are documented in [docs/results.md](docs/results.md).
 
-### Side-by-Side Profiling Summary
+### Trajectory Accuracy
 
-| Stage | CPU Only Avg (ms) | Hybrid GPU Avg (ms) | Notes |
-|-------|-------------------|-------------------|-------|
-| Undistort | 0.27 | 1.06 | GPU includes getBytes sync overhead |
-| Detect | 0.31 | 0.18 | GPU Win: FAST + Harris scoring |
-| Stereo Match | 0.01 | 0.45 | Hybrid uses ORB descriptor extraction |
-| Track | 0.92 | 2.02 | CPU KLT tracking |
-| Optimize | 2.52 | 1.35 | GPU Win: Higher quality features |
-| Total AVG | 8.99 ms | 9.59 ms | |
-| Total MAX | 77.54 ms | 42.78 ms | GPU Win: Drastic reduction in jitter |
+| Pipeline | ATE RMSE | RPE RMSE | Avg Frame Time |
+|----------|----------|----------|----------------|
+| **CPU** (OpenCV ORB) | **3.52 m** | **0.28 m** | 60.7 ms |
+| **GPU** (Full Metal) | 59.61 m | 1.84 m | 11.9 ms |
 
-### Summary Comparison
+The CPU pipeline achieves stable trajectory estimation. The GPU pipeline now uses the full Metal front-end (FAST → Harris → Metal ORB → Metal StereoMatcher) with CPU KLT tracking. After wiring in Metal ORB and Metal StereoMatcher, ATE improved **365x** (from 21,736m to 59.6m) and landmark starvation was eliminated (0 frames with zero landmarks, down from 1,606). The remaining gap is due to the Metal stereo matcher producing ~3.8x fewer matches per keyframe than OpenCV — tuning `MetalStereoConfig` thresholds and increasing `max_keypoints` are the next steps.
 
-**Latency Consistency:** The Hybrid GPU version is significantly more stable. While the CPU version is slightly faster on average, it suffers from massive latency spikes (up to 77ms). The GPU version caps worst-case latency at 42ms, ensuring a much smoother real-time experience.
+### ATE & RPE Comparison
 
-**Optimization Quality:** The GPU pipeline (Metal FAST + Harris Response) produces higher-quality feature localizations. This is evidenced by the Optimize stage dropping from 2.52ms to 1.35ms, as the backend solver converges much faster with the GPU-sourced data.
+![ATE & RPE Comparison](docs/img/ate_rpe_comparison.png)
 
-**Resource Balancing:** By offloading Undistort and Detection to Metal, the CPU is freed up from feature extraction tasks. 
+### Cost Evolution
+
+![Cost Comparison](docs/img/cost_comparison.png)
+
+### Per-Stage Timing
+
+| Stage | CPU Avg (ms) | GPU Avg (ms) |
+|-------|-------------|-------------|
+| Undistort | 0.31 | 1.51 |
+| Detect | 1.22 | 1.43 |
+| Stereo Match | 0.11 | 3.05 |
+| Stereo Retrack | — | 3.37 |
+| Temporal Track | 0.56 | 0.37 |
+| Optimize | 96.56 | 24.49 |
+| **Total** | **60.73** | **11.93** |
+
+The GPU pipeline is **5.1x faster** on average. See [full results](docs/results.md) for detailed analysis and path forward.
+
+
 ## Project Structure
 
 ```

@@ -198,4 +198,4 @@ struct LoopClosureFactor {
     Eigen::Matrix<double, 6, 6> sqrt_info_;
 };
 
-} 
+}

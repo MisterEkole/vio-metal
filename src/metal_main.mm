@@ -27,6 +27,8 @@
 #include "metal/MetalUndistort.h"
 #include "metal/FastDetect.h"
 #include "metal/HarrisResponse.h"
+#include "metal/ORBDescriptor.h"
+#include "metal/StereoMatcher.h"
 
 namespace {
 std::vector<cv::KeyPoint> cornersToCvKeypoints(const std::vector<vio::CornerPoint>& corners) {
@@ -51,6 +53,31 @@ std::vector<vio::CornerPoint> gridNMS(const std::vector<vio::CornerPoint>& corne
     size_t count = std::min((size_t)max_f, sorted.size());
     for(size_t i = 0; i < count; ++i) result.push_back(sorted[i]);
     return result;
+}
+
+// Convert Metal StereoMatchResult → CPU StereoMatcher::StereoMatch
+std::vector<vio::StereoMatcher::StereoMatch> metalToStereoMatches(
+    const std::vector<vio::StereoMatchResult>& metal_matches) {
+    std::vector<vio::StereoMatcher::StereoMatch> out;
+    out.reserve(metal_matches.size());
+    for (const auto& m : metal_matches) {
+        vio::StereoMatcher::StereoMatch sm;
+        sm.left_idx = (int)m.left_idx;
+        sm.right_idx = (int)m.right_idx;
+        sm.disparity = m.disparity;
+        sm.point_3d = Eigen::Vector3d(m.point_3d[0], m.point_3d[1], m.point_3d[2]);
+        out.push_back(sm);
+    }
+    return out;
+}
+
+// Convert Metal ORB descriptors to cv::Mat for loop detector
+cv::Mat orbOutputToCvMat(const std::vector<vio::ORBDescriptorOutput>& descs) {
+    cv::Mat mat(descs.size(), 32, CV_8UC1);
+    for (size_t i = 0; i < descs.size(); i++) {
+        memcpy(mat.ptr(i), descs[i].desc, 32);
+    }
+    return mat;
 }
 
 vio::KeyframeState getGtState(const std::vector<vio::PoseStamped>& gt, uint64_t target_ts) {
@@ -107,9 +134,11 @@ int main(int argc, char** argv) {
     }
 
     cv::Mat R1, R2, P1, P2, Q, map_x_l, map_y_l, map_x_r, map_y_r;
-    cv::stereoRectify(K_l, D_l, K_r, D_r, cv::Size(752, 480), R_rl_cv, t_rl_cv, R1, R2, P1, P2, Q);
-    cv::initUndistortRectifyMap(K_l, D_l, R1, P1, cv::Size(752, 480), CV_32FC1, map_x_l, map_y_l);
-    cv::initUndistortRectifyMap(K_r, D_r, R2, P2, cv::Size(752, 480), CV_32FC1, map_x_r, map_y_r);
+    // EuRoC uses equidistant (fisheye) distortion model
+    cv::fisheye::stereoRectify(K_l, D_l, K_r, D_r, cv::Size(752, 480), R_rl_cv, t_rl_cv, R1, R2, P1, P2, Q,
+                               cv::CALIB_ZERO_DISPARITY, cv::Size(752, 480));
+    cv::fisheye::initUndistortRectifyMap(K_l, D_l, R1, P1, cv::Size(752, 480), CV_32FC1, map_x_l, map_y_l);
+    cv::fisheye::initUndistortRectifyMap(K_r, D_r, R2, P2, cv::Size(752, 480), CV_32FC1, map_x_r, map_y_r);
 
     double fx_rect = P1.at<double>(0,0);
     calib.intrinsics_left  = Eigen::Vector4d(fx_rect, P1.at<double>(1,1), P1.at<double>(0,2), P1.at<double>(1,2));
@@ -118,16 +147,27 @@ int main(int argc, char** argv) {
     calib.T_cam1_cam0 = Eigen::Matrix4d::Identity();
     calib.T_cam1_cam0(0,3) = -baseline_rect;
 
+    // Apply rectification rotation R1 to camera-IMU extrinsic
+    {
+        Eigen::Matrix3d R1_eigen;
+        for (int r = 0; r < 3; r++)
+            for (int c = 0; c < 3; c++)
+                R1_eigen(r, c) = R1.at<double>(r, c);
+        Eigen::Matrix4d T_rect = Eigen::Matrix4d::Identity();
+        T_rect.block<3,3>(0,0) = R1_eigen;
+        calib.T_cam0_imu = T_rect * calib.T_cam0_imu;
+    }
+
     vio::MetalContext* metal_ctx = new vio::MetalContext();
     vio::MetalUndistort* und_l = new vio::MetalUndistort(metal_ctx, map_x_l, map_y_l, 752, 480, metallib_path);
     vio::MetalUndistort* und_r = new vio::MetalUndistort(metal_ctx, map_x_r, map_y_r, 752, 480, metallib_path);
     
-    vio::TemporalTracker cpu_tracker; 
-    vio::StereoMatcher cpu_stereo; 
-    cv::Ptr<cv::ORB> orb_extractor = cv::ORB::create(1000); 
+    vio::TemporalTracker cpu_tracker;
 
     vio::MetalFastDetector* fast = new vio::MetalFastDetector(metal_ctx, 752, 480, metallib_path);
     vio::MetalHarrisResponse* harris = new vio::MetalHarrisResponse(metal_ctx, metallib_path);
+    vio::MetalORBDescriptor* orb_gpu = new vio::MetalORBDescriptor(metal_ctx, metallib_path);
+    vio::MetalStereoMatcher* stereo_gpu = new vio::MetalStereoMatcher(metal_ctx, metallib_path);
 
     vio::FeatureManager feature_manager;
     vio::VioOptimizer optimizer(vio::VioOptimizer::Config{}, calib);
@@ -200,20 +240,34 @@ int main(int argc, char** argv) {
                 if (!initialized) {
                     std::printf("[init] starting detection...\n"); std::fflush(stdout);
                     profiler.startStage("detect");
-                    auto raw = fast->detect(und_l->outputTexture());
-                    harris->score(und_l->outputTexture(), raw);
-                    auto nms = gridNMS(raw, 400);
-                    std::vector<cv::KeyPoint> kpts_l = cornersToCvKeypoints(nms);
-                    
-                    cv::Mat desc_l, desc_r;
-                    std::vector<cv::KeyPoint> kpts_r_all; 
-                    orb_extractor->detectAndCompute(right_undist_cpu, cv::noArray(), kpts_r_all, desc_r);
-                    orb_extractor->compute(left_undist_cpu, kpts_l, desc_l);
-                    
-                    auto initial_matches = cpu_stereo.match(kpts_l, desc_l, kpts_r_all, desc_r, calib);
+                    auto raw_l = fast->detect(und_l->outputTexture());
+                    harris->score(und_l->outputTexture(), raw_l);
+                    auto nms_l = gridNMS(raw_l, 400);
+                    auto desc_l_gpu = orb_gpu->describe(und_l->outputTexture(), nms_l);
+
+                    auto raw_r = fast->detect(und_r->outputTexture());
+                    harris->score(und_r->outputTexture(), raw_r);
+                    auto nms_r = gridNMS(raw_r, 400);
+                    auto desc_r_gpu = orb_gpu->describe(und_r->outputTexture(), nms_r);
+
+                    vio::MetalStereoCalib mcalib{
+                        (float)calib.intrinsics_left[0], (float)calib.intrinsics_left[1],
+                        (float)calib.intrinsics_left[2], (float)calib.intrinsics_left[3],
+                        (float)baseline_rect};
+                    auto metal_matches = stereo_gpu->match(nms_l, desc_l_gpu, nms_r, desc_r_gpu, mcalib);
+                    auto initial_matches = metalToStereoMatches(metal_matches);
+
+                    std::vector<cv::KeyPoint> kpts_l = cornersToCvKeypoints(nms_l);
+                    cv::Mat desc_l = orbOutputToCvMat(desc_l_gpu);
 
                     optimizer.initialize(current_gt);
                     feature_manager.addNewFeatures(frame.timestamp_ns, kpts_l, desc_l, initial_matches);
+
+                    // KF0 observations anchor landmarks at the fixed first frame
+                    optimizer.addObservations(frame.timestamp_ns, feature_manager.getObservationsForFrame(frame.timestamp_ns));
+                    auto lm_world_init = feature_manager.getInitializedLandmarksWorld(
+                        current_gt.position, current_gt.rotation, calib.T_cam0_imu);
+                    optimizer.setLandmarks(lm_world_init);
 
                     profiler.setCount("features_detected", (int)kpts_l.size());
                     profiler.setCount("stereo_matches", (int)initial_matches.size());
@@ -241,27 +295,38 @@ int main(int argc, char** argv) {
                         std::fflush(stdout);
                     }
 
+                    double parallax = vio::TemporalTracker::averageParallax(
+                        pts_to_track, res.tracked_points, res.status, calib.intrinsics_left[0]);
                     frames_since_kf++;
-                    if (kf_policy.shouldInsertKeyframe(res.num_tracked, 0.5, (int)frames_since_kf)) {
-                        // Re-match tracked features against right image to recover stereo
+                    if (kf_policy.shouldInsertKeyframe(res.num_tracked, parallax, (int)frames_since_kf)) {
                         profiler.startStage("stereo_retrack");
                         std::vector<cv::Point2f> tracked_pts = feature_manager.getCurrentPoints();
                         std::vector<uint64_t> tracked_ids = feature_manager.getCurrentIds();
 
                         if (!tracked_pts.empty()) {
-                            // Build keypoints from tracked positions for ORB descriptor extraction
-                            std::vector<cv::KeyPoint> tracked_kpts;
-                            tracked_kpts.reserve(tracked_pts.size());
+                            // Convert tracked points to CornerPoints for Metal ORB
+                            std::vector<vio::CornerPoint> tracked_corners;
+                            tracked_corners.reserve(tracked_pts.size());
                             for (const auto& pt : tracked_pts) {
-                                tracked_kpts.emplace_back(pt, 31.0f);
+                                vio::CornerPoint cp;
+                                cp.position[0] = pt.x; cp.position[1] = pt.y;
+                                cp.response = 1.0f; cp.pyramid_level = 0;
+                                tracked_corners.push_back(cp);
                             }
+                            auto tracked_desc_gpu = orb_gpu->describe(und_l->outputTexture(), tracked_corners);
 
-                            cv::Mat tracked_desc, right_desc_retrack;
-                            std::vector<cv::KeyPoint> right_kpts_retrack;
-                            orb_extractor->detectAndCompute(right_undist_cpu, cv::noArray(), right_kpts_retrack, right_desc_retrack);
-                            orb_extractor->compute(left_undist_cpu, tracked_kpts, tracked_desc);
+                            // Detect + describe right image with Metal
+                            auto raw_r = fast->detect(und_r->outputTexture());
+                            harris->score(und_r->outputTexture(), raw_r);
+                            auto nms_r = gridNMS(raw_r, 400);
+                            auto desc_r_gpu = orb_gpu->describe(und_r->outputTexture(), nms_r);
 
-                            auto retrack_matches = cpu_stereo.match(tracked_kpts, tracked_desc, right_kpts_retrack, right_desc_retrack, calib);
+                            vio::MetalStereoCalib mcalib{
+                                (float)calib.intrinsics_left[0], (float)calib.intrinsics_left[1],
+                                (float)calib.intrinsics_left[2], (float)calib.intrinsics_left[3],
+                                (float)baseline_rect};
+                            auto metal_retrack = stereo_gpu->match(tracked_corners, tracked_desc_gpu, nms_r, desc_r_gpu, mcalib);
+                            auto retrack_matches = metalToStereoMatches(metal_retrack);
                             feature_manager.updateStereoForTracked(frame.timestamp_ns, tracked_ids, retrack_matches);
 
                             profiler.setCount("stereo_retracked", (int)retrack_matches.size());
@@ -272,38 +337,46 @@ int main(int argc, char** argv) {
                         }
                         profiler.endStage("stereo_retrack");
 
-                        // Detect new features, avoiding existing tracked points
                         profiler.startStage("detect");
-                        auto raw = fast->detect(und_l->outputTexture());
-                        harris->score(und_l->outputTexture(), raw);
-                        auto nms = gridNMS(raw, 300);
-                        std::vector<cv::KeyPoint> kpts_l = cornersToCvKeypoints(nms);
+                        auto raw_new = fast->detect(und_l->outputTexture());
+                        harris->score(und_l->outputTexture(), raw_new);
+                        auto nms_new = gridNMS(raw_new, 300);
 
-                        // Filter out detections near existing tracked points
+                        // Filter detections near existing tracks
                         {
                             auto existing = feature_manager.getCurrentPoints();
                             if (!existing.empty()) {
                                 cv::Mat mask = cv::Mat::ones(480, 752, CV_8UC1) * 255;
                                 for (const auto& pt : existing)
                                     cv::circle(mask, pt, 10, cv::Scalar(0), -1);
-                                std::vector<cv::KeyPoint> filtered;
-                                for (const auto& kp : kpts_l) {
-                                    int px = (int)kp.pt.x, py = (int)kp.pt.y;
+                                std::vector<vio::CornerPoint> filtered;
+                                for (const auto& cp : nms_new) {
+                                    int px = (int)cp.position[0], py = (int)cp.position[1];
                                     if (px >= 0 && px < 752 && py >= 0 && py < 480 && mask.at<uint8_t>(py, px) > 0)
-                                        filtered.push_back(kp);
+                                        filtered.push_back(cp);
                                 }
-                                kpts_l = std::move(filtered);
+                                nms_new = std::move(filtered);
                             }
                         }
                         profiler.endStage("detect");
 
                         profiler.startStage("stereo_match");
-                        cv::Mat desc_l, desc_r;
-                        std::vector<cv::KeyPoint> kpts_r_all;
-                        orb_extractor->detectAndCompute(right_undist_cpu, cv::noArray(), kpts_r_all, desc_r);
-                        orb_extractor->compute(left_undist_cpu, kpts_l, desc_l);
+                        auto desc_new_l = orb_gpu->describe(und_l->outputTexture(), nms_new);
 
-                        auto matches = cpu_stereo.match(kpts_l, desc_l, kpts_r_all, desc_r, calib);
+                        auto raw_r_new = fast->detect(und_r->outputTexture());
+                        harris->score(und_r->outputTexture(), raw_r_new);
+                        auto nms_r_new = gridNMS(raw_r_new, 400);
+                        auto desc_new_r = orb_gpu->describe(und_r->outputTexture(), nms_r_new);
+
+                        vio::MetalStereoCalib mcalib_new{
+                            (float)calib.intrinsics_left[0], (float)calib.intrinsics_left[1],
+                            (float)calib.intrinsics_left[2], (float)calib.intrinsics_left[3],
+                            (float)baseline_rect};
+                        auto metal_new_matches = stereo_gpu->match(nms_new, desc_new_l, nms_r_new, desc_new_r, mcalib_new);
+                        auto matches = metalToStereoMatches(metal_new_matches);
+
+                        std::vector<cv::KeyPoint> kpts_l = cornersToCvKeypoints(nms_new);
+                        cv::Mat desc_l = orbOutputToCvMat(desc_new_l);
                         feature_manager.addNewFeatures(frame.timestamp_ns, kpts_l, desc_l, matches);
                         profiler.setCount("features_detected", (int)kpts_l.size());
                         profiler.setCount("stereo_matches", (int)matches.size());
@@ -445,7 +518,7 @@ int main(int argc, char** argv) {
         if (vio_thread.joinable()) vio_thread.join();
     }
 
-    delete visualizer; delete und_l; delete und_r; delete fast; delete harris; delete metal_ctx;
+    delete visualizer; delete und_l; delete und_r; delete fast; delete harris; delete orb_gpu; delete stereo_gpu; delete metal_ctx;
     }
     return 0;
 }
