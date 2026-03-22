@@ -43,7 +43,6 @@ public:
 
     void buildPyramid(const uint8_t* image_data, int stride, bool is_previous);
     
-    // Updated to match the implementation in KLTTracker.mm
     void encodeTrack(const std::vector<cv::Point2f>& points);
    
     
@@ -69,7 +68,6 @@ private:
     BufferPtr back_status_buffer_;
     BufferPtr params_buffer_;
 
-    // Added missing members required by KLTTracker.mm
     bool ready_ = false;
     std::vector<float> cached_px_, cached_py_;
     int width_, height_;

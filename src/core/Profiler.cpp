@@ -24,12 +24,12 @@ double Profiler::endStage(const std::string& name) {
 
     double ms = std::chrono::duration<double, std::milli>(Clock::now() - it->second).count();
 
-    // Map to FrameTiming fields
     if (name == "load") current_.load_ms = ms;
     else if (name == "undistort") current_.undistort_ms = ms;
     else if (name == "detect") current_.detect_ms = ms;
     else if (name == "describe") current_.describe_ms = ms;
     else if (name == "stereo_match") current_.stereo_match_ms = ms;
+    else if (name == "stereo_retrack") current_.stereo_retrack_ms = ms;
     else if (name == "temporal_track") current_.temporal_track_ms = ms;
     else if (name == "preintegration") current_.preintegration_ms = ms;
     else if (name == "optimize") current_.optimize_ms = ms;
@@ -40,7 +40,9 @@ double Profiler::endStage(const std::string& name) {
 void Profiler::setCount(const std::string& name, int value) {
     if (name == "features_detected") current_.num_features_detected = value;
     else if (name == "stereo_matches") current_.num_stereo_matches = value;
+    else if (name == "stereo_retracked") current_.num_stereo_retracked = value;
     else if (name == "tracked") current_.num_tracked = value;
+    else if (name == "landmarks_initialized") current_.num_landmarks_initialized = value;
     else if (name == "landmarks") current_.num_landmarks_in_window = value;
 }
 
@@ -52,8 +54,8 @@ void Profiler::endFrame() {
 void Profiler::writeCSV(const std::string& path) const {
     std::ofstream f(path);
     f << "frame_id,timestamp_ns,load_ms,undistort_ms,detect_ms,describe_ms,"
-      << "stereo_ms,track_ms,preint_ms,optimize_ms,total_ms,"
-      << "n_features,n_stereo,n_tracked,n_landmarks\n";
+      << "stereo_ms,stereo_retrack_ms,track_ms,preint_ms,optimize_ms,total_ms,"
+      << "n_features,n_stereo,n_stereo_retracked,n_tracked,n_landmarks_init,n_landmarks\n";
 
     for (const auto& t : history_) {
         f << t.frame_id << ","
@@ -64,13 +66,16 @@ void Profiler::writeCSV(const std::string& path) const {
           << t.detect_ms << ","
           << t.describe_ms << ","
           << t.stereo_match_ms << ","
+          << t.stereo_retrack_ms << ","
           << t.temporal_track_ms << ","
           << t.preintegration_ms << ","
           << t.optimize_ms << ","
           << t.total_ms << ","
           << t.num_features_detected << ","
           << t.num_stereo_matches << ","
+          << t.num_stereo_retracked << ","
           << t.num_tracked << ","
+          << t.num_landmarks_initialized << ","
           << t.num_landmarks_in_window << "\n";
     }
 }
@@ -106,6 +111,7 @@ void Profiler::printSummary() const {
     row("Detect",       &FrameTiming::detect_ms);
     row("Describe",     &FrameTiming::describe_ms);
     row("Stereo Match", &FrameTiming::stereo_match_ms);
+    row("Stereo Retrk", &FrameTiming::stereo_retrack_ms);
     row("Track",        &FrameTiming::temporal_track_ms);
     row("Preintegrate", &FrameTiming::preintegration_ms);
     row("Optimize",     &FrameTiming::optimize_ms);

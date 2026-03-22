@@ -25,12 +25,9 @@ std::vector<StereoMatcher::StereoMatch> StereoMatcher::match(
     double cx = calib.intrinsics_left[2];
     double cy = calib.intrinsics_left[3];
 
-    // Baseline: distance between cameras along x-axis
-    // T_cam1_cam0 column 3 gives translation of cam0 origin in cam1 frame
     Eigen::Vector3d t_cam1_cam0 = calib.T_cam1_cam0.block<3,1>(0,3);
     double baseline = t_cam1_cam0.norm();
 
-    // For each left keypoint, find best matching right keypoint
     for (int i = 0; i < (int)left_kpts.size(); i++) {
         const auto& lkp = left_kpts[i];
         const cv::Mat& ldesc = left_desc.row(i);
@@ -42,15 +39,13 @@ std::vector<StereoMatcher::StereoMatch> StereoMatcher::match(
         for (int j = 0; j < (int)right_kpts.size(); j++) {
             const auto& rkp = right_kpts[j];
 
-            // Epipolar constraint: for rectified stereo, y-coords should match
+            // Epipolar constraint (rectified)
             double y_diff = std::abs(lkp.pt.y - rkp.pt.y);
             if (y_diff > config_.max_epipolar_error) continue;
 
-            // Disparity constraint: right point should be to the left of (or at) left point
             double disparity = lkp.pt.x - rkp.pt.x;
             if (disparity < config_.min_disparity || disparity > config_.max_disparity) continue;
 
-            // Descriptor distance (Hamming for ORB)
             int dist = cv::norm(ldesc, right_desc.row(j), cv::NORM_HAMMING);
             if (dist < best_dist) {
                 second_dist = best_dist;
@@ -61,17 +56,14 @@ std::vector<StereoMatcher::StereoMatch> StereoMatcher::match(
             }
         }
 
-        // Apply thresholds
         if (best_idx < 0) continue;
         if (best_dist > config_.max_descriptor_dist) continue;
 
-        // Ratio test
         if (second_dist < std::numeric_limits<int>::max()) {
             double ratio = (double)best_dist / (double)second_dist;
             if (ratio > config_.ratio_test) continue;
         }
 
-        // Triangulate
         double disparity = lkp.pt.x - right_kpts[best_idx].pt.x;
         double depth = fx * baseline / disparity;
 

@@ -107,21 +107,16 @@ void MetalKLTTracker::encodeTrack(const std::vector<cv::Point2f>& points) {
 
     if (!ready_ || points.empty()) return;
     
-    // Determine point count (clamped to GPU buffer size)
     uint32_t n = (uint32_t)std::min(points.size(), (size_t)max_points_);
     last_n_points_ = n;
 
-    // Copy points to the Metal Shared Buffer and update internal cache
     float* pts_gpu = (float*)[prev_pts_buffer_ contents];
     cached_px_.resize(n);
     cached_py_.resize(n);
 
-    for (uint32_t i = 0; i < n; i++) { 
-        // Fill GPU buffer
-        pts_gpu[i*2]   = points[i].x; 
-        pts_gpu[i*2+1] = points[i].y; 
-        
-        // Fill CPU cache for FB-error validation later
+    for (uint32_t i = 0; i < n; i++) {
+        pts_gpu[i*2]   = points[i].x;
+        pts_gpu[i*2+1] = points[i].y;
         cached_px_[i] = points[i].x;
         cached_py_[i] = points[i].y;
     }
@@ -138,11 +133,6 @@ void MetalKLTTracker::encodeTrack(const std::vector<cv::Point2f>& points) {
     id<MTLCommandQueue> queue = (__bridge id<MTLCommandQueue>)context_->getCommandQueue();
     id<MTLCommandBuffer> cmdBuf = [queue commandBuffer];
     
-    // // Fix "passing address of non-local object to __autoreleasing" by using __strong pointers
-    // KLTTexturePtr __strong * p_pyr = prev_pyramid_;
-    // KLTTexturePtr __strong * c_pyr = curr_pyramid_;
-    // dispatchKLT(p_pyr, c_pyr, prev_pts_buffer_, curr_pts_buffer_, status_buffer_, n, (__bridge void*)cmdBuf);
-
     KLTTexturePtr const * p_pyr = prev_pyramid_;
     KLTTexturePtr const * c_pyr = curr_pyramid_;
 

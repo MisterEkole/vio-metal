@@ -24,60 +24,48 @@ namespace vio{
     }
 
     void ImuPreintegrator::integrate(const Eigen::Vector3d& gyro, const Eigen::Vector3d& accel, double dt){
-        // Bias corrected measurements
-
         Eigen::Vector3d omega = gyro - bg0_;
         Eigen::Vector3d acc = accel - ba0_;
 
         Eigen::Matrix3d R_k = dR_.toRotationMatrix();
 
-        // Rotation increment
         Eigen::Vector3d omega_dt = omega * dt;
         Eigen::Matrix3d dR_inc = expSO3(omega_dt);
         Eigen::Matrix3d Jr = rightJacobianSO3(omega_dt);
 
-        // Covariance propagation
+        // Error-state covariance propagation: P = A P A^T + B Q B^T
         Eigen::Matrix<double, 9,9> A = Eigen::Matrix<double,9,9>::Identity();
         Eigen::Matrix<double, 9,6> B = Eigen::Matrix<double,9,6>::Zero();
-
-        // A matrix (error-state transition)
         A.block<3,3>(0,0) = dR_inc.transpose();
         A.block<3,3>(3,0) = -R_k * skewSymmetric(acc) * dt;
         A.block<3,3>(6,0) = -0.5 * R_k * skewSymmetric(acc) * dt * dt;
         A.block<3,3>(6,3) = Eigen::Matrix3d::Identity() * dt;  
 
-        // B matrix (noise input: maps measurement noise to state error)
-        B.block<3,3>(0,0) = Jr * dt;                   
-        B.block<3,3>(3,3) = R_k * dt;                  
-        B.block<3,3>(6,3) = 0.5 * R_k * dt * dt;      
-
-        // Noise covariance (continuous PSD → discrete)
+        B.block<3,3>(0,0) = Jr * dt;
+        B.block<3,3>(3,3) = R_k * dt;
+        B.block<3,3>(6,3) = 0.5 * R_k * dt * dt;
         Eigen::Matrix<double, 6,6> Qc = Eigen::Matrix<double, 6,6>::Zero();
-        double ng2 = noise_.gyro_noise_density * noise_.gyro_noise_density;     
+        double ng2 = noise_.gyro_noise_density * noise_.gyro_noise_density;
         double na2 = noise_.accel_noise_density * noise_.accel_noise_density;
         Qc.block<3,3>(0,0) = Eigen::Matrix3d::Identity() * ng2;
         Qc.block<3,3>(3,3) = Eigen::Matrix3d::Identity() * na2;
 
         cov_ = A * cov_ * A.transpose() + B * Qc * B.transpose();
 
-        // ---- Bias Jacobians ----
-        // J_bg: how preintegrated measurements change with gyro bias
-        J_bg_.block<3,3>(0,0) = dR_inc.transpose() * J_bg_.block<3,3>(0,0) - Jr * dt;
-        J_bg_.block<3,3>(3,0) = J_bg_.block<3,3>(3,0) - R_k * skewSymmetric(acc) * J_bg_.block<3,3>(0,0) * dt;
-        J_bg_.block<3,3>(6,0) = J_bg_.block<3,3>(6,0) + J_bg_.block<3,3>(3,0) * dt
-                            - 0.5 * R_k * skewSymmetric(acc) * J_bg_.block<3,3>(0,0) * dt * dt;
+        // Bias Jacobians (save old values before updating)
+        Eigen::Matrix3d J_bg_R_old = J_bg_.block<3,3>(0,0);
+        Eigen::Matrix3d J_bg_v_old = J_bg_.block<3,3>(3,0);
+        Eigen::Matrix3d J_ba_v_old = J_ba_.block<3,3>(3,0);
 
-        // J_ba: how preintegrated measurements change with accel bias
-        J_ba_.block<3,3>(3,0) = J_ba_.block<3,3>(3,0) - R_k * dt;
-        J_ba_.block<3,3>(6,0) = J_ba_.block<3,3>(6,0) + J_ba_.block<3,3>(3,0) * dt - 0.5 * R_k * dt * dt;
+        J_bg_.block<3,3>(0,0) = dR_inc.transpose() * J_bg_R_old - Jr * dt;
+        J_bg_.block<3,3>(3,0) = J_bg_v_old - R_k * skewSymmetric(acc) * J_bg_R_old * dt;
+        J_bg_.block<3,3>(6,0) = J_bg_.block<3,3>(6,0) + J_bg_v_old * dt
+                            - 0.5 * R_k * skewSymmetric(acc) * J_bg_R_old * dt * dt;
 
-        // Eigen::Vector3d world_gravity(0, 0, -9.81); 
-        // // Subtract gravity in the body frame before integrating
-        // Eigen::Vector3d acc_corrected = acc - R_k.transpose() * world_gravity;
+        J_ba_.block<3,3>(3,0) = J_ba_v_old - R_k * dt;
+        J_ba_.block<3,3>(6,0) = J_ba_.block<3,3>(6,0) + J_ba_v_old * dt - 0.5 * R_k * dt * dt;
 
-        // ---- Update preintegrated measurements ----
-
-    
+        // Update preintegrated measurements
         dp_ = dp_ + dv_ * dt + 0.5 * R_k * acc * dt * dt;
         dv_ = dv_ + R_k * acc * dt;
         dR_ = Eigen::Quaterniond(R_k * dR_inc);
@@ -102,16 +90,13 @@ namespace vio{
     }
     PreintegrationResult ImuPreintegrator::getCorrected(const Eigen::Vector3d& new_bg, const Eigen::Vector3d& new_ba) const{
         PreintegrationResult r = getResult();
-        //bias correction
         Eigen::Vector3d dbg = new_bg - bg0_;
         Eigen::Vector3d dba = new_ba - ba0_;
 
-        // rotation correction
-        Eigen::Vector3d dR_correction = J_bg_.block<3,3>(0,0).transpose() * dbg;
+        Eigen::Vector3d dR_correction = J_bg_.block<3,3>(0,0) * dbg;
         r.delta_R = dR_ * Eigen::Quaterniond(expSO3(dR_correction));
         r.delta_R.normalize();
 
-        // vel and pos correction (ADD to original, don't overwrite)
         r.delta_v = dv_ + J_bg_.block<3,3>(3,0) * dbg + J_ba_.block<3,3>(3,0) * dba;
         r.delta_p = dp_ + J_bg_.block<3,3>(6,0) * dbg + J_ba_.block<3,3>(6,0) * dba;
 

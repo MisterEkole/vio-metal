@@ -52,27 +52,72 @@ Download the EuRoC MAV Dataset:
 
 ## Run
 
-The pipeline can be run in either CPU mode (OpenCV vision) or GPU mode (Metal vision with CPU-based KLT tracking). A real-time Pangolin visualizer will spawn to plot the Ground Truth (Red) vs Estimated Trajectory (Green).
+Both pipelines support the following flags:
 
-**Note:** Replace `<path_to_euroc_dataset>` with the actual path on your local machine.
+| Flag | Description |
+|------|-------------|
+| `--headless` | Run without the Pangolin visualizer window |
+| `--quiet` | Suppress per-frame terminal logging |
 
-### Run CPU Version
+By default, both the visualizer and terminal logging are active.
+
+### GPU Pipeline (Metal + CPU KLT)
 
 ```bash
-./build/vio-metal <path_to_euroc_dataset> ./build/shaders.metallib
+# With visualizer + terminal logging
+./build/vio-metal-gpu <dataset_path> ./build/shaders.metallib
+
+# Headless (no window) + terminal logging
+./build/vio-metal-gpu <dataset_path> ./build/shaders.metallib --headless
+
+# Headless + quiet (logging to files only)
+./build/vio-metal-gpu <dataset_path> ./build/shaders.metallib --headless --quiet
 ```
 
-### Run GPU Version (with CPU-based KLT Tracking)
+### CPU Pipeline (OpenCV)
 
 ```bash
-./build/vio-metal-gpu <path_to_euroc_dataset> ./build/shaders.metallib
+# With visualizer + terminal logging
+./build/vio-metal <dataset_path>
+
+# Headless + terminal logging
+./build/vio-metal <dataset_path> --headless
 ```
+
+### Terminal Output
+
+When not `--quiet`, each keyframe prints a status line:
+
+```
+[  42] cost: 3634.8 -> 0.0  iter: 5  lm: 34  res: 113  CONV  pos: (0.88, 2.14, 0.95)  err: 0.003m
+```
+
+Fields: frame index, initial/final cost, solver iterations, landmark count, residual count, convergence status, estimated position, position error vs ground truth.
+
+### Evaluation
+
+Run the full pipeline + ATE/RPE evaluation with [evo](https://github.com/MichaelGrupp/evo):
+
+```bash
+# GPU pipeline (default)
+bash eval/evaluate.sh
+
+# CPU pipeline
+bash eval/evaluate.sh cpu
+```
+
+This runs the pipeline in headless mode, converts ground truth to TUM format, computes ATE/RPE metrics, and generates cost plots.
 
 ### Output
 
-- Real-time 3D Pangolin visualization.
-- `results/trajectories/estimated.txt` — TUM-format trajectory.
-- `results/timing/timing.csv` — per-frame timing breakdown.
+- `results/trajectories/estimated_<timestamp>.txt` — TUM-format trajectory
+- `results/configs/cost_log_<timestamp>.csv` — per-keyframe optimizer cost log
+- `results/configs/cost_plot_<timestamp>.png` — cost evolution plot
+- `results/configs/timing_<timestamp>.csv` — per-frame timing breakdown
+- `results/configs/ate_<timestamp>.zip` — ATE results (evo)
+- `results/configs/rpe_<timestamp>.zip` — RPE results (evo)
+
+All output files are timestamped to prevent overwriting between runs.
 
 ## Architecture & Data Flow
 
@@ -122,7 +167,7 @@ src/
 ├── imu/            ImuPreintegrator, ImuTypes
 ├── optimization/   VioOptimizer, Factors (Ceres), Marginalization
 ├── visualizer.h    Pangolin real-time 3D trajectory plotting
-├── main.cpp        CPU Pipeline orchestration
+├── main.mm         CPU Pipeline orchestration
 └── metal_main.mm   GPU Pipeline orchestration (with CPU KLT tracking)
 ```
 

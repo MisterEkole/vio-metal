@@ -26,7 +26,7 @@ namespace vio{
     };
 
     struct FastDetectorConfig{
-        int threshold = 20;
+        int threshold = 12;
         int max_corners = 50000;
     };
 
@@ -39,7 +39,7 @@ namespace vio{
             const FastDetectorConfig& config = FastDetectorConfig());
         ~MetalFastDetector() = default;
 
-        std::vector<CornerPoint> detect( const uint8_t* image_data, int stride ); // run fastdetect on grayscale R8Unorm texture and return detected corner(pos+score+level)
+        std::vector<CornerPoint> detect( const uint8_t* image_data, int stride );
         std::vector<CornerPoint> detect(void* input_texture);
         uint32_t lastCornerCount() const {return last_count_;}
         double lastGpuTimeMs() const {return last_gpu_ms_;}

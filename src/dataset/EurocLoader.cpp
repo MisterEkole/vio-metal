@@ -20,7 +20,7 @@ EurocLoader::EurocLoader(const std::string& dataset_path)
 
 void EurocLoader::skipCsvHeader(std::ifstream& file) const {
     std::string line;
-    std::getline(file, line); // Skip the first line (header)
+    std::getline(file, line);
 }
 
 void EurocLoader::loadImuData() {
@@ -40,7 +40,6 @@ void EurocLoader::loadImuData() {
         std::string token;
         ImuSample sample;
 
-        // EuRoC format: timestamp [ns], w_RS_S_x [rad s^-1], w_RS_S_y, w_RS_S_z, a_RS_S_x [m s^-2], a_RS_S_y, a_RS_S_z
         std::getline(ss, token, ','); sample.timestamp_ns = std::stoull(token);
         std::getline(ss, token, ','); sample.gyro.x() = std::stod(token);
         std::getline(ss, token, ','); sample.gyro.y() = std::stod(token);
@@ -68,7 +67,6 @@ void EurocLoader::loadImageData() {
     skipCsvHeader(file1);
 
     std::string line0, line1;
-    // EuRoC cameras are hardware synchronized; we can read them lock-step
     while (std::getline(file0, line0) && std::getline(file1, line1)) {
         if (line0.empty() || line1.empty()) continue;
 
@@ -78,15 +76,12 @@ void EurocLoader::loadImageData() {
 
         ImageRecord record;
         
-        // Parse left camera
         std::getline(ss0, token0, ','); record.timestamp_ns = std::stoull(token0);
         std::getline(ss0, token0, ','); record.filename_left = token0;
 
-        // Parse right camera (ignore timestamp as it matches left)
-        std::getline(ss1, token1, ','); 
+        std::getline(ss1, token1, ',');
         std::getline(ss1, token1, ','); record.filename_right = token1;
 
-        // Clean up carriage returns if on Windows
         if (!record.filename_left.empty() && record.filename_left.back() == '\r') record.filename_left.pop_back();
         if (!record.filename_right.empty() && record.filename_right.back() == '\r') record.filename_right.pop_back();
 
@@ -102,7 +97,6 @@ bool EurocLoader::nextIsImage() const {
     if (current_image_idx_ >= image_records_.size()) return false;
     if (current_imu_idx_ >= imu_records_.size()) return true;
 
-    // Check which timestamp comes first
     return image_records_[current_image_idx_].timestamp_ns <= imu_records_[current_imu_idx_].timestamp_ns;
 }
 
@@ -162,15 +156,11 @@ std::vector<PoseStamped> EurocLoader::loadGroundTruth() const {
         std::string token;
         PoseStamped pose;
 
-        // Format: timestamp, p_RS_R_x, p_RS_R_y, p_RS_R_z, q_RS_w, q_RS_x, q_RS_y, q_RS_z, ...
         std::getline(ss, token, ','); pose.timestamp_ns = std::stoull(token);
-        
-        // Position
         std::getline(ss, token, ','); pose.position.x() = std::stod(token);
         std::getline(ss, token, ','); pose.position.y() = std::stod(token);
         std::getline(ss, token, ','); pose.position.z() = std::stod(token);
         
-        // Quaternion (EuRoC provides w, x, y, z)
         double qw, qx, qy, qz;
         std::getline(ss, token, ','); qw = std::stod(token);
         std::getline(ss, token, ','); qx = std::stod(token);
@@ -178,12 +168,10 @@ std::vector<PoseStamped> EurocLoader::loadGroundTruth() const {
         std::getline(ss, token, ','); qz = std::stod(token);
         pose.orientation = Eigen::Quaterniond(qw, qx, qy, qz);
         
-        // Velocity
         std::getline(ss, token, ','); pose.velocity.x() = std::stod(token);
         std::getline(ss, token, ','); pose.velocity.y() = std::stod(token);
         std::getline(ss, token, ','); pose.velocity.z() = std::stod(token);
 
-        // Biases
         std::getline(ss, token, ','); pose.bg.x() = std::stod(token);
         std::getline(ss, token, ','); pose.bg.y() = std::stod(token);
         std::getline(ss, token, ','); pose.bg.z() = std::stod(token);
@@ -199,15 +187,13 @@ std::vector<PoseStamped> EurocLoader::loadGroundTruth() const {
 StereoCalibration EurocLoader::getCalibration() const {
     StereoCalibration calib;
     
-    // YAML Parser
-    
     try {
         YAML::Node cam0 = YAML::LoadFile(dataset_path_ + "/mav0/cam0/sensor.yaml");
         YAML::Node cam1 = YAML::LoadFile(dataset_path_ + "/mav0/cam1/sensor.yaml");
         YAML::Node imu = YAML::LoadFile(dataset_path_ + "/mav0/imu0/sensor.yaml");
 
         auto intr0 = cam0["intrinsics"].as<std::vector<double>>();
-        calib.intrinsics_left = Eigen::Vector4d(intr0[0], intr0[1], intr0[2], intr0[3]); // fx, fy, cx, cy
+        calib.intrinsics_left = Eigen::Vector4d(intr0[0], intr0[1], intr0[2], intr0[3]);
         
         auto dist0 = cam0["distortion_coefficients"].as<std::vector<double>>();
         calib.distortion_left = Eigen::Vector4d(dist0[0], dist0[1], dist0[2], dist0[3]);
@@ -218,7 +204,7 @@ StereoCalibration EurocLoader::getCalibration() const {
         auto dist1 = cam1["distortion_coefficients"].as<std::vector<double>>();
         calib.distortion_right = Eigen::Vector4d(dist1[0], dist1[1], dist1[2], dist1[3]);
 
-        // T_BS (Body to Sensor) matrices. Body is IMU.
+        // T_BS: body (IMU) to sensor
         auto T_BS_cam0 = cam0["T_BS"]["data"].as<std::vector<double>>();
         auto T_BS_cam1 = cam1["T_BS"]["data"].as<std::vector<double>>();
         

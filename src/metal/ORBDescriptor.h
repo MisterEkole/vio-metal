@@ -36,7 +36,6 @@ public:
 
     ~MetalORBDescriptor() = default;
 
-    /// Compute descriptors for keypoints. Returns one ORBDescriptorOutput per keypoint.
     std::vector<ORBDescriptorOutput> describe(void* image_texture,
                                               const std::vector<CornerPoint>& keypoints);
 

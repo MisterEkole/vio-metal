@@ -16,13 +16,16 @@ struct FrameTiming {
     double detect_ms = 0.0;
     double describe_ms = 0.0;
     double stereo_match_ms = 0.0;
+    double stereo_retrack_ms = 0.0;
     double temporal_track_ms = 0.0;
     double preintegration_ms = 0.0;
     double optimize_ms = 0.0;
     double total_ms = 0.0;
     int num_features_detected = 0;
     int num_stereo_matches = 0;
+    int num_stereo_retracked = 0;
     int num_tracked = 0;
+    int num_landmarks_initialized = 0;
     int num_landmarks_in_window = 0;
 };
 
@@ -44,7 +47,6 @@ public:
 
     void writeCSV(const std::string& path) const;
 
-    // Summary stats
     void printSummary() const;
 
 private:

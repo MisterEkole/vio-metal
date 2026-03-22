@@ -11,16 +11,15 @@ struct ImuNoiseParams {
     double accel_random_walk = 3.0000e-03;       // m/s³/√Hz
 };
 
-// Preintegration result for use in optimizer
 struct PreintegrationResult {
-    Eigen::Quaterniond delta_R;      // Relative rotation
-    Eigen::Vector3d delta_v;         // Relative velocity
-    Eigen::Vector3d delta_p;         // Relative position
-    Eigen::Matrix<double, 9, 9> covariance;  // [dR, dv, dp]
-    Eigen::Matrix<double, 9, 3> J_bg;        // Jacobian w.r.t. gyro bias
-    Eigen::Matrix<double, 9, 3> J_ba;        // Jacobian w.r.t. accel bias
-    double dt;                       // Total integration time
-    Eigen::Vector3d linearized_bg;   // Bias at linearization
+    Eigen::Quaterniond delta_R;
+    Eigen::Vector3d delta_v;
+    Eigen::Vector3d delta_p;
+    Eigen::Matrix<double, 9, 9> covariance;
+    Eigen::Matrix<double, 9, 3> J_bg;
+    Eigen::Matrix<double, 9, 3> J_ba;
+    double dt;
+    Eigen::Vector3d linearized_bg;
     Eigen::Vector3d linearized_ba;
 };
 

@@ -7,7 +7,6 @@
 
 namespace vio {
 
-// Must match StereoMatch.metal exactly
 struct StereoParamsGPU {
     uint32_t n_left;
     uint32_t n_right;
@@ -40,23 +39,19 @@ MetalStereoMatcher::MetalStereoMatcher(MetalContext* context,
 
     uint32_t N = max_keypoints_;
 
-    // Descriptor buffers: each descriptor is 8 × uint32 = 32 bytes
     left_desc_buffer_  = [device newBufferWithLength:N * 8 * sizeof(uint32_t)
                                              options:MTLResourceStorageModeShared];
     right_desc_buffer_ = [device newBufferWithLength:N * 8 * sizeof(uint32_t)
                                              options:MTLResourceStorageModeShared];
 
-    // Keypoint buffers
     left_kpts_buffer_  = [device newBufferWithLength:N * sizeof(CornerPoint)
                                              options:MTLResourceStorageModeShared];
     right_kpts_buffer_ = [device newBufferWithLength:N * sizeof(CornerPoint)
                                              options:MTLResourceStorageModeShared];
 
-    // Distance matrix: N_left × N_right × sizeof(ushort)
     dist_matrix_buffer_ = [device newBufferWithLength:N * N * sizeof(uint16_t)
                                               options:MTLResourceStorageModeShared];
 
-    // Output matches
     match_buffer_ = [device newBufferWithLength:N * sizeof(StereoMatchResult)
                                         options:MTLResourceStorageModeShared];
 
@@ -84,12 +79,9 @@ std::vector<StereoMatchResult> MetalStereoMatcher::match(
     uint32_t nl = (uint32_t)std::min(left_kpts.size(),  (size_t)max_keypoints_);
     uint32_t nr = (uint32_t)std::min(right_kpts.size(), (size_t)max_keypoints_);
 
-    // Upload keypoints
     memcpy([left_kpts_buffer_ contents],  left_kpts.data(),  nl * sizeof(CornerPoint));
     memcpy([right_kpts_buffer_ contents], right_kpts.data(), nr * sizeof(CornerPoint));
 
-    // Upload descriptors (extract the 8×uint32 desc arrays from ORBDescriptorOutput)
-    // ORBDescriptorOutput has desc[8] then angle — we need just desc[8] packed tightly
     {
         uint32_t* dst_l = (uint32_t*)[left_desc_buffer_ contents];
         uint32_t* dst_r = (uint32_t*)[right_desc_buffer_ contents];
@@ -99,7 +91,6 @@ std::vector<StereoMatchResult> MetalStereoMatcher::match(
             memcpy(dst_r + i * 8, right_desc[i].desc, 8 * sizeof(uint32_t));
     }
 
-    // Set params
     StereoParamsGPU params;
     params.n_left        = nl;
     params.n_right       = nr;
@@ -113,15 +104,12 @@ std::vector<StereoMatchResult> MetalStereoMatcher::match(
     params.baseline = calib.baseline;
     memcpy([params_buffer_ contents], &params, sizeof(StereoParamsGPU));
 
-    // Reset match counter
     uint32_t zero = 0;
     memcpy([match_count_buffer_ contents], &zero, sizeof(uint32_t));
 
-    // === Dispatch both kernels in one command buffer ===
     id<MTLCommandQueue> queue = (__bridge id<MTLCommandQueue>)context_->getCommandQueue();
     id<MTLCommandBuffer> commandBuffer = [queue commandBuffer];
 
-    // --- Kernel A: Hamming distance matrix (2D dispatch) ---
     {
         id<MTLComputeCommandEncoder> enc = [commandBuffer computeCommandEncoder];
         [enc setComputePipelineState:hamming_pipeline_];
@@ -138,7 +126,6 @@ std::vector<StereoMatchResult> MetalStereoMatcher::match(
         [enc endEncoding];
     }
 
-    // --- Kernel B: Best match extraction (1D dispatch) ---
     {
         id<MTLComputeCommandEncoder> enc = [commandBuffer computeCommandEncoder];
         [enc setComputePipelineState:extract_pipeline_];
@@ -160,7 +147,6 @@ std::vector<StereoMatchResult> MetalStereoMatcher::match(
 
     last_gpu_ms_ = ([commandBuffer GPUEndTime] - [commandBuffer GPUStartTime]) * 1000.0;
 
-    // Read results
     last_match_count_ = *(uint32_t*)[match_count_buffer_ contents];
     uint32_t n = std::min(last_match_count_, nl);
 

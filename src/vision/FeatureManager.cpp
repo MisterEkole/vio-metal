@@ -25,7 +25,7 @@ void FeatureManager::addNewFeatures(
             const auto& sm = *(it->second);
             track.observations_right.emplace_back(
                 keypoints[i].pt.x - sm.disparity, keypoints[i].pt.y);
-            track.landmark_3d = sm.point_3d;  // Local Camera Frame
+            track.landmark_3d = sm.point_3d;
             track.landmark_initialized = true;
         } else {
             track.observations_right.emplace_back(-1.0, -1.0);
@@ -66,14 +66,12 @@ void FeatureManager::updateTracks(
     current_points_ = std::move(new_points);
 }
 
-// --- Update stereo observations for tracked features at keyframes ---
 void FeatureManager::updateStereoForTracked(
     uint64_t timestamp,
     const std::vector<uint64_t>& tracked_ids,
     const std::vector<StereoMatcher::StereoMatch>& stereo_matches)
 {
     for (const auto& m : stereo_matches) {
-        // m.left_idx is already remapped to index in tracked_ids
         if (m.left_idx < 0 || m.left_idx >= static_cast<int>(tracked_ids.size())) continue;
         
         uint64_t fid = tracked_ids[m.left_idx];
@@ -82,7 +80,6 @@ void FeatureManager::updateStereoForTracked(
 
         auto& track = it->second;
         
-        // Update the right observation for the current frame (last entry)
         if (!track.observations_right.empty() && !track.observations_left.empty()) {
             double u_left = track.observations_left.back().x();
             double v_left = track.observations_left.back().y();
@@ -90,15 +87,12 @@ void FeatureManager::updateStereoForTracked(
                 u_left - m.disparity, v_left);
         }
         
-        // Initialize 3D position if not already set
         if (!track.landmark_initialized) {
             track.landmark_3d = m.point_3d;
             track.landmark_initialized = true;
         }
     }
 }
-
-// --- NEW METHOD IMPLEMENTATION ---
 
 std::unordered_map<uint64_t, Eigen::Vector3d> FeatureManager::getInitializedLandmarksWorld(
     const Eigen::Vector3d& p_wb, 
@@ -107,12 +101,15 @@ std::unordered_map<uint64_t, Eigen::Vector3d> FeatureManager::getInitializedLand
 {
     std::unordered_map<uint64_t, Eigen::Vector3d> landmarks_world;
     
+    // T_cam_imu: IMU→camera. Invert to get camera→body.
     Eigen::Matrix3d R_ci = T_cam_imu.block<3,3>(0,0);
     Eigen::Vector3d t_ci = T_cam_imu.block<3,1>(0,3);
+    Eigen::Matrix3d R_ic = R_ci.transpose();
+    Eigen::Vector3d t_ic = -R_ci.transpose() * t_ci;
 
     for (const auto& [fid, track] : tracks_) {
         if (track.landmark_initialized) {
-            Eigen::Vector3d P_body = R_ci * track.landmark_3d + t_ci;
+            Eigen::Vector3d P_body = R_ic * track.landmark_3d + t_ic;
             landmarks_world[fid] = q_wb * P_body + p_wb;
         }
     }

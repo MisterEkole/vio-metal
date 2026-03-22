@@ -47,11 +47,9 @@ MetalUndistort::MetalUndistort(MetalContext* context,
     ready_ = (pipeline_ != nil && map_x_texture_ != nil);
 }
 
-// ASYNCHRONOUS DISPATCH: Call at start of frame
 void MetalUndistort::encodeUndistort(const cv::Mat& input) {
     if (!ready_ || input.empty()) return;
 
-    // Upload CPU image to GPU texture
     MTLRegion region = MTLRegionMake2D(0, 0, width_, height_);
     [input_texture_ replaceRegion:region mipmapLevel:0 withBytes:input.data bytesPerRow:input.step];
 
@@ -70,13 +68,10 @@ void MetalUndistort::encodeUndistort(const cv::Mat& input) {
     [encoder dispatchThreads:gridSize threadsPerThreadgroup:groupSize];
     [encoder endEncoding];
     
-    // Fire the GPU. No wait!!
-
     [commandBuffer commit];
-    context_->setLastBuffer((__bridge void*)commandBuffer);
+    [commandBuffer waitUntilCompleted];
 }
 
-// DATA RETRIEVAL: call after end frame 
 cv::Mat MetalUndistort::getOutputMat() {
     cv::Mat output(height_, width_, CV_8UC1);
     MTLRegion region = MTLRegionMake2D(0, 0, width_, height_);
@@ -89,7 +84,6 @@ cv::Mat MetalUndistort::getOutputMat() {
 
 cv::Mat MetalUndistort::undistort(const cv::Mat& input) {
     encodeUndistort(input);
-    context_->waitForLastBuffer(); // Force wait 
     return getOutputMat();
 }
 

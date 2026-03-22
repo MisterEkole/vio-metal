@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <vector>
 #include <cstdint>
+#include <algorithm>
 
 #include "dataset/EurocLoader.h"
 #include "imu/ImuPreintegrator.h"
@@ -16,39 +17,54 @@
 namespace vio {
 
 struct KeyframeState {
-    uint64_t timestamp;
-    Eigen::Vector3d position;
-    Eigen::Quaterniond rotation;
-    Eigen::Vector3d velocity;
-    Eigen::Vector3d bias_gyro;
-    Eigen::Vector3d bias_accel;
+    uint64_t timestamp = 0;
+    Eigen::Vector3d position = Eigen::Vector3d::Zero();
+    Eigen::Quaterniond rotation = Eigen::Quaterniond::Identity();
+    Eigen::Vector3d velocity = Eigen::Vector3d::Zero();
+    Eigen::Vector3d bias_gyro = Eigen::Vector3d::Zero();
+    Eigen::Vector3d bias_accel = Eigen::Vector3d::Zero();
+};
+
+struct LoopConstraint {
+    uint64_t timestamp_i;               // query keyframe
+    uint64_t timestamp_j;               // matched keyframe
+    Eigen::Vector3d relative_position;  // T_ij translation (in frame i)
+    Eigen::Quaterniond relative_rotation; // T_ij rotation
+    Eigen::Matrix<double, 6, 6> sqrt_info;
 };
 
 class VioOptimizer {
 public:
     struct Config {
-        int window_size = 20 ;
-        int max_iterations = 30;
-        double huber_reprojection = 1.0;
-        double huber_imu = 0;
+        int window_size = 20;
+        int max_iterations = 20;
+        double huber_reprojection = 5.0;
+        double huber_imu = 10.0;
         bool use_dogleg = false;
+        int max_landmarks = 250;
+        double max_position_jump = 2.0;   // meters — reject solution if position jumps more than this
+    };
+
+    struct OptimizeSummary {
+        double initial_cost = 0.0;
+        double final_cost = 0.0;
+        int iterations = 0;
+        int num_residuals = 0;
+        int num_landmarks = 0;
+        bool success = false;
     };
 
     VioOptimizer(const Config& config, const StereoCalibration& calib);
 
-    // Add a new keyframe with its preintegration and observations
     void addKeyframe(
         uint64_t timestamp,
         const PreintegrationResult& preint,
         const std::vector<FeatureObservation>& observations);
 
-    // Initialize the first keyframe (from ground truth or identity)
     void initialize(const KeyframeState& initial_state);
-
-    // Run sliding window optimization
     KeyframeState optimize();
+    const OptimizeSummary& lastSummary() const { return last_summary_; }
 
-    // Accessors
     const std::deque<KeyframeState>& window() const { return window_; }
     KeyframeState latestState() const;
     bool isInitialized() const { return initialized_; }
@@ -57,6 +73,8 @@ public:
     void setLandmarks(const std::unordered_map<uint64_t, Eigen::Vector3d>& landmarks);
     void addObservations(uint64_t timestamp, const std::vector<FeatureObservation>& obs);
 
+    void addLoopConstraint(const LoopConstraint& lc);
+
 private:
     void marginalize();
 
@@ -64,19 +82,15 @@ private:
     StereoCalibration calib_;
     bool initialized_ = false;
 
-    // Sliding window of keyframe states
     std::deque<KeyframeState> window_;
-    std::deque<PreintegrationResult> preint_between_;  // preint_between_[i] connects window_[i] to window_[i+1]
+    std::deque<PreintegrationResult> preint_between_;
 
-    // Observations per keyframe (indexed by timestamp)
     std::unordered_map<uint64_t, std::vector<FeatureObservation>> observations_;
-
-    // 3D landmarks (feature_id -> world position)
     std::unordered_map<uint64_t, Eigen::Vector3d> landmarks_;
 
-    // Marginalization prior
     MarginalizationInfo margin_info_;
+    std::vector<LoopConstraint> loop_constraints_;
+    OptimizeSummary last_summary_;
 };
-
 
 }

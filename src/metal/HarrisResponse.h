@@ -32,9 +32,6 @@ public:
 
     ~MetalHarrisResponse() = default;
 
-    /// Score corners in-place (updates response field)
-    /// image_texture: the grayscale R8Unorm texture
-    /// corners: output from FAST detector (modified in-place)
     void score(void* image_texture,
                std::vector<CornerPoint>& corners);
 

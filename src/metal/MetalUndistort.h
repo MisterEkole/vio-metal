@@ -26,11 +26,9 @@ public:
 
     ~MetalUndistort() = default;
 
-    // Asynchronous Flow
     void encodeUndistort(const cv::Mat& input);
     cv::Mat getOutputMat();
 
-    // Legacy Synchronous Flow
     cv::Mat undistort(const cv::Mat& input);
 
     double lastGpuTimeMs() const { return last_gpu_ms_; }

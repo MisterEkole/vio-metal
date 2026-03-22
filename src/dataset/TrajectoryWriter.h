@@ -13,7 +13,7 @@ public:
     explicit TrajectoryWriter(const std::string& output_path);
     ~TrajectoryWriter();
 
-    // Write a single pose in TUM format: timestamp tx ty tz qx qy qz qw
+    // TUM format: timestamp tx ty tz qx qy qz qw
     void writePose(double timestamp_sec,
                    const Eigen::Vector3d& position,
                    const Eigen::Quaterniond& orientation);
