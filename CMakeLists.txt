@@ -63,6 +63,7 @@ set(VIO_SOURCES
     src/vision/StereoMatcher.cpp
     src/vision/TemporalTracker.mm
     src/vision/FeatureManager.cpp
+    src/vision/LoopDetector.cpp
     src/imu/ImuPreintegrator.cpp
     src/optimization/VioOptimizer.cpp
     src/optimization/Factors.cpp

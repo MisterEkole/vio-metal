@@ -51,17 +51,14 @@ void MetalHarrisResponse::score(void* image_texture,
     uint32_t n = (uint32_t)std::min(corners.size(), (size_t)max_corners_);
     id<MTLTexture> texture = (__bridge id<MTLTexture>)image_texture;
 
-    // Upload corners to GPU buffer
     memcpy([corner_buffer_ contents], corners.data(), n * sizeof(CornerPoint));
 
-    // Set params
     HarrisParamsGPU params;
     params.n_corners    = n;
     params.patch_radius = config_.patch_radius;
     params.k            = config_.k;
     memcpy([params_buffer_ contents], &params, sizeof(HarrisParamsGPU));
 
-    // Dispatch
     id<MTLCommandQueue> queue = (__bridge id<MTLCommandQueue>)context_->getCommandQueue();
     id<MTLCommandBuffer> commandBuffer = [queue commandBuffer];
     id<MTLComputeCommandEncoder> encoder = [commandBuffer computeCommandEncoder];
@@ -81,7 +78,6 @@ void MetalHarrisResponse::score(void* image_texture,
 
     last_gpu_ms_ = ([commandBuffer GPUEndTime] - [commandBuffer GPUStartTime]) * 1000.0;
 
-    // Read scored corners back (UMA zero-copy)
     memcpy(corners.data(), [corner_buffer_ contents], n * sizeof(CornerPoint));
 }
 

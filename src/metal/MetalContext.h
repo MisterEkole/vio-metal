@@ -21,9 +21,9 @@ public:
     void* getPipeline(const std::string& name, void* library);
 
 private:
-    void* device_;            // Standardized name
-    void* command_queue_;     // Standardized name
-    void* last_buffer_;       // Standardized name (replaces last_buffer_ptr)
+    void* device_;
+    void* command_queue_;
+    void* last_buffer_;
 };
 
 } // namespace vio

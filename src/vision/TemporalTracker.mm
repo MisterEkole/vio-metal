@@ -1,6 +1,3 @@
-// Phase 1: OpenCV KLT implementation
-// Phase 2+: Can swap to Apple Vision VNTrackPointsRequest for GPU acceleration
-
 #include "TemporalTracker.h"
 #include <chrono>
 #include <cmath>
@@ -25,7 +22,6 @@ TemporalTracker::TrackResult TemporalTracker::track(
 
     auto t0 = std::chrono::high_resolution_clock::now();
 
-    // Forward KLT
     std::vector<cv::Point2f> fwd_pts;
     std::vector<uchar> fwd_status;
     std::vector<float> fwd_err;
@@ -44,40 +40,51 @@ TemporalTracker::TrackResult TemporalTracker::track(
         0, config_.min_eigen_threshold
     );
 
-    // Backward KLT for forward-backward consistency check
-    std::vector<cv::Point2f> bwd_pts;
-    std::vector<uchar> bwd_status;
-    std::vector<float> bwd_err;
+    if (config_.use_forward_backward) {
+        // Backward pass for FB consistency
+        std::vector<cv::Point2f> bwd_pts;
+        std::vector<uchar> bwd_status;
+        std::vector<float> bwd_err;
 
-    cv::calcOpticalFlowPyrLK(
-        curr_image, prev_image,
-        fwd_pts, bwd_pts,
-        bwd_status, bwd_err,
-        config_.win_size, config_.max_level,
-        criteria,
-        0, config_.min_eigen_threshold
-    );
+        cv::calcOpticalFlowPyrLK(
+            curr_image, prev_image,
+            fwd_pts, bwd_pts,
+            bwd_status, bwd_err,
+            config_.win_size, config_.max_level,
+            criteria,
+            0, config_.min_eigen_threshold
+        );
 
-    // Validate: forward-backward consistency + bounds check
-    for (size_t i = 0; i < prev_points.size(); i++) {
-        if (!fwd_status[i] || !bwd_status[i]) continue;
+        for (size_t i = 0; i < prev_points.size(); i++) {
+            if (!fwd_status[i] || !bwd_status[i]) continue;
 
-        // Forward-backward error
-        double fb_dx = prev_points[i].x - bwd_pts[i].x;
-        double fb_dy = prev_points[i].y - bwd_pts[i].y;
-        double fb_err = std::sqrt(fb_dx * fb_dx + fb_dy * fb_dy);
-        if (fb_err > 1.0) continue;  // Strict: 1 pixel threshold
+            double fb_dx = prev_points[i].x - bwd_pts[i].x;
+            double fb_dy = prev_points[i].y - bwd_pts[i].y;
+            double fb_err = std::sqrt(fb_dx * fb_dx + fb_dy * fb_dy);
+            if (fb_err > 1.0) continue;
 
-        // Tracking error from KLT
-        if (fwd_err[i] > config_.max_error) continue;
+            if (fwd_err[i] > config_.max_error) continue;
 
-        // Bounds check
-        if (fwd_pts[i].x < 0 || fwd_pts[i].x >= curr_image.cols ||
-            fwd_pts[i].y < 0 || fwd_pts[i].y >= curr_image.rows) continue;
+            if (fwd_pts[i].x < 0 || fwd_pts[i].x >= curr_image.cols ||
+                fwd_pts[i].y < 0 || fwd_pts[i].y >= curr_image.rows) continue;
 
-        result.tracked_points[i] = fwd_pts[i];
-        result.status[i] = true;
-        result.num_tracked++;
+            result.tracked_points[i] = fwd_pts[i];
+            result.status[i] = true;
+            result.num_tracked++;
+        }
+    } else {
+        for (size_t i = 0; i < prev_points.size(); i++) {
+            if (!fwd_status[i]) continue;
+
+            if (fwd_err[i] > config_.max_error) continue;
+
+            if (fwd_pts[i].x < 0 || fwd_pts[i].x >= curr_image.cols ||
+                fwd_pts[i].y < 0 || fwd_pts[i].y >= curr_image.rows) continue;
+
+            result.tracked_points[i] = fwd_pts[i];
+            result.status[i] = true;
+            result.num_tracked++;
+        }
     }
 
     auto t1 = std::chrono::high_resolution_clock::now();

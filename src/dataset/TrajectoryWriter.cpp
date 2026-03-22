@@ -10,7 +10,6 @@ TrajectoryWriter::TrajectoryWriter(const std::string& output_path)
     if (!file_.is_open()) {
         std::cerr << "[TrajectoryWriter] Failed to open: " << output_path << "\n";
     }
-    file_ << "# timestamp tx ty tz qx qy qz qw\n";
     file_ << std::fixed << std::setprecision(9);
 }
 

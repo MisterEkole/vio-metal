@@ -32,7 +32,6 @@ FeatureDetector::DetectionResult FeatureDetector::detect(const cv::Mat& image) {
 
     auto t0 = std::chrono::high_resolution_clock::now();
 
-    // Grid-based FAST detection to ensure spatial distribution
     std::vector<cv::KeyPoint> all_kpts;
     int cell_h = image.rows / config_.grid_rows;
     int cell_w = image.cols / config_.grid_cols;
@@ -100,7 +99,6 @@ FeatureDetector::DetectionResult FeatureDetector::detect(
     std::vector<cv::KeyPoint> filtered_kpts;
     cv::Mat filtered_desc;
     
-    // Safety check for descriptors before accessing rows
     if (result.descriptors.empty()) return result;
 
     for (size_t i = 0; i < result.keypoints.size(); i++) {

@@ -52,27 +52,72 @@ Download the EuRoC MAV Dataset:
 
 ## Run
 
-The pipeline can be run in either CPU mode (OpenCV vision) or GPU mode (Metal vision with CPU-based KLT tracking). A real-time Pangolin visualizer will spawn to plot the Ground Truth (Red) vs Estimated Trajectory (Green).
+Both pipelines support the following flags:
 
-**Note:** Replace `<path_to_euroc_dataset>` with the actual path on your local machine.
+| Flag | Description |
+|------|-------------|
+| `--headless` | Run without the Pangolin visualizer window |
+| `--quiet` | Suppress per-frame terminal logging |
 
-### Run CPU Version
+By default, both the visualizer and terminal logging are active.
+
+### GPU Pipeline (Metal + CPU KLT)
 
 ```bash
-./build/vio-metal <path_to_euroc_dataset> ./build/shaders.metallib
+# With visualizer + terminal logging
+./build/vio-metal-gpu <dataset_path> ./build/shaders.metallib
+
+# Headless (no window) + terminal logging
+./build/vio-metal-gpu <dataset_path> ./build/shaders.metallib --headless
+
+# Headless + quiet (logging to files only)
+./build/vio-metal-gpu <dataset_path> ./build/shaders.metallib --headless --quiet
 ```
 
-### Run GPU Version (with CPU-based KLT Tracking)
+### CPU Pipeline (OpenCV)
 
 ```bash
-./build/vio-metal-gpu <path_to_euroc_dataset> ./build/shaders.metallib
+# With visualizer + terminal logging
+./build/vio-metal <dataset_path>
+
+# Headless + terminal logging
+./build/vio-metal <dataset_path> --headless
 ```
+
+### Terminal Output
+
+When not `--quiet`, each keyframe prints a status line:
+
+```
+[  42] cost: 3634.8 -> 0.0  iter: 5  lm: 34  res: 113  CONV  pos: (0.88, 2.14, 0.95)  err: 0.003m
+```
+
+Fields: frame index, initial/final cost, solver iterations, landmark count, residual count, convergence status, estimated position, position error vs ground truth.
+
+### Evaluation
+
+Run the full pipeline + ATE/RPE evaluation with [evo](https://github.com/MichaelGrupp/evo):
+
+```bash
+# GPU pipeline (default)
+bash eval/evaluate.sh
+
+# CPU pipeline
+bash eval/evaluate.sh cpu
+```
+
+This runs the pipeline in headless mode, converts ground truth to TUM format, computes ATE/RPE metrics, and generates cost plots.
 
 ### Output
 
-- Real-time 3D Pangolin visualization.
-- `results/trajectories/estimated.txt` — TUM-format trajectory.
-- `results/timing/timing.csv` — per-frame timing breakdown.
+- `results/trajectories/estimated_<timestamp>.txt` — TUM-format trajectory
+- `results/configs/cost_log_<timestamp>.csv` — per-keyframe optimizer cost log
+- `results/configs/cost_plot_<timestamp>.png` — cost evolution plot
+- `results/configs/timing_<timestamp>.csv` — per-frame timing breakdown
+- `results/configs/ate_<timestamp>.zip` — ATE results (evo)
+- `results/configs/rpe_<timestamp>.zip` — RPE results (evo)
+
+All output files are timestamped to prevent overwriting between runs.
 
 ## Architecture & Data Flow
 
@@ -88,29 +133,42 @@ The pipeline can be run in either CPU mode (OpenCV vision) or GPU mode (Metal vi
 
 
 
-## Performance Benchmarks
+## Results
 
-The following results were generated on an Apple M-series processor using the EuRoC V1_01_easy dataset (2912 frames).
+Full evaluation results comparing both pipelines on EuRoC V1_01_easy are documented in [docs/results.md](docs/results.md).
 
-### Side-by-Side Profiling Summary
+### Trajectory Accuracy
 
-| Stage | CPU Only Avg (ms) | Hybrid GPU Avg (ms) | Notes |
-|-------|-------------------|-------------------|-------|
-| Undistort | 0.27 | 1.06 | GPU includes getBytes sync overhead |
-| Detect | 0.31 | 0.18 | GPU Win: FAST + Harris scoring |
-| Stereo Match | 0.01 | 0.45 | Hybrid uses ORB descriptor extraction |
-| Track | 0.92 | 2.02 | CPU KLT tracking |
-| Optimize | 2.52 | 1.35 | GPU Win: Higher quality features |
-| Total AVG | 8.99 ms | 9.59 ms | |
-| Total MAX | 77.54 ms | 42.78 ms | GPU Win: Drastic reduction in jitter |
+| Pipeline | ATE RMSE | RPE RMSE | Avg Frame Time |
+|----------|----------|----------|----------------|
+| **CPU** (OpenCV ORB) | **3.52 m** | **0.28 m** | 60.7 ms |
+| **GPU** (Full Metal) | 59.61 m | 1.84 m | 11.9 ms |
 
-### Summary Comparison
+The CPU pipeline achieves stable trajectory estimation. The GPU pipeline now uses the full Metal front-end (FAST → Harris → Metal ORB → Metal StereoMatcher) with CPU KLT tracking. After wiring in Metal ORB and Metal StereoMatcher, ATE improved **365x** (from 21,736m to 59.6m) and landmark starvation was eliminated (0 frames with zero landmarks, down from 1,606). The remaining gap is due to the Metal stereo matcher producing ~3.8x fewer matches per keyframe than OpenCV — tuning `MetalStereoConfig` thresholds and increasing `max_keypoints` are the next steps.
 
-**Latency Consistency:** The Hybrid GPU version is significantly more stable. While the CPU version is slightly faster on average, it suffers from massive latency spikes (up to 77ms). The GPU version caps worst-case latency at 42ms, ensuring a much smoother real-time experience.
+### ATE & RPE Comparison
 
-**Optimization Quality:** The GPU pipeline (Metal FAST + Harris Response) produces higher-quality feature localizations. This is evidenced by the Optimize stage dropping from 2.52ms to 1.35ms, as the backend solver converges much faster with the GPU-sourced data.
+![ATE & RPE Comparison](docs/img/ate_rpe_comparison.png)
 
-**Resource Balancing:** By offloading Undistort and Detection to Metal, the CPU is freed up from feature extraction tasks. 
+### Cost Evolution
+
+![Cost Comparison](docs/img/cost_comparison.png)
+
+### Per-Stage Timing
+
+| Stage | CPU Avg (ms) | GPU Avg (ms) |
+|-------|-------------|-------------|
+| Undistort | 0.31 | 1.51 |
+| Detect | 1.22 | 1.43 |
+| Stereo Match | 0.11 | 3.05 |
+| Stereo Retrack | — | 3.37 |
+| Temporal Track | 0.56 | 0.37 |
+| Optimize | 96.56 | 24.49 |
+| **Total** | **60.73** | **11.93** |
+
+The GPU pipeline is **5.1x faster** on average. See [full results](docs/results.md) for detailed analysis and path forward.
+
+
 ## Project Structure
 
 ```
@@ -122,7 +180,7 @@ src/
 ├── imu/            ImuPreintegrator, ImuTypes
 ├── optimization/   VioOptimizer, Factors (Ceres), Marginalization
 ├── visualizer.h    Pangolin real-time 3D trajectory plotting
-├── main.cpp        CPU Pipeline orchestration
+├── main.mm         CPU Pipeline orchestration
 └── metal_main.mm   GPU Pipeline orchestration (with CPU KLT tracking)
 ```
 

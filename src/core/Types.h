@@ -8,13 +8,10 @@
 
 namespace vio {
 
-// Gravity vector (world frame, z-up)
 constexpr double GRAVITY_MAGNITUDE = 9.81;
 inline Eigen::Vector3d gravity() { return Eigen::Vector3d(0.0, 0.0, -GRAVITY_MAGNITUDE); }
 
-// ============================================================
-// SE3 / SO3 Utilities
-// ============================================================
+// SO(3) utilities
 
 inline Eigen::Matrix3d skewSymmetric(const Eigen::Vector3d& v) {
     Eigen::Matrix3d S;
@@ -24,7 +21,7 @@ inline Eigen::Matrix3d skewSymmetric(const Eigen::Vector3d& v) {
     return S;
 }
 
-// SO(3) exponential map: axis-angle vector -> rotation matrix
+// exp: axis-angle → rotation matrix (Rodrigues)
 inline Eigen::Matrix3d expSO3(const Eigen::Vector3d& omega) {
     double theta = omega.norm();
     if (theta < 1e-10) {
@@ -37,7 +34,7 @@ inline Eigen::Matrix3d expSO3(const Eigen::Vector3d& omega) {
          + (1.0 - std::cos(theta)) * K * K;
 }
 
-// SO(3) logarithmic map: rotation matrix -> axis-angle vector
+// log: rotation matrix → axis-angle
 inline Eigen::Vector3d logSO3(const Eigen::Matrix3d& R) {
     double cos_angle = std::clamp((R.trace() - 1.0) * 0.5, -1.0, 1.0);
     double angle = std::acos(cos_angle);
@@ -48,7 +45,7 @@ inline Eigen::Vector3d logSO3(const Eigen::Matrix3d& R) {
     return Eigen::Vector3d(lnR(2,1), lnR(0,2), lnR(1,0));
 }
 
-// Right Jacobian of SO(3)
+// Jr(omega) = I - (1-cos(t))/t^2 [omega]x + (1-sin(t)/t)/t^2 [omega]x^2
 inline Eigen::Matrix3d rightJacobianSO3(const Eigen::Vector3d& omega) {
     double theta = omega.norm();
     if (theta < 1e-10) {
@@ -65,10 +62,6 @@ inline Eigen::Vector3d quaternionToRotVec(const Eigen::Quaterniond& q) {
     return logSO3(q.toRotationMatrix());
 }
 
-// ============================================================
-// Feature observation for optimizer
-// ============================================================
-
 struct FeatureObservation {
     uint64_t feature_id;
     Eigen::Vector2d pixel_left;
@@ -77,10 +70,6 @@ struct FeatureObservation {
     Eigen::Vector3d landmark_3d;   // World frame initial estimate
     bool landmark_initialized = false;
 };
-
-// ============================================================
-// Conversion utilities
-// ============================================================
 
 inline double nsToSec(uint64_t ns) {
     return static_cast<double>(ns) * 1e-9;

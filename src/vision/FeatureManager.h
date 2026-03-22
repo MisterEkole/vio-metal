@@ -36,14 +36,12 @@ public:
         const std::vector<cv::Point2f>& tracked_points,
         const std::vector<bool>& status);
 
-    // Update stereo observations for tracked features at keyframes
     void updateStereoForTracked(
         uint64_t timestamp,
         const std::vector<uint64_t>& tracked_ids,
         const std::vector<StereoMatcher::StereoMatch>& stereo_matches);
 
-    // --- NEW METHOD FOR COORDINATE TRANSFORMATION ---
-    // Converts local landmark_3d into World coordinates based on current pose
+    // Transform local landmarks to world frame using current body pose
     std::unordered_map<uint64_t, Eigen::Vector3d> getInitializedLandmarksWorld(
         const Eigen::Vector3d& p_wb, 
         const Eigen::Quaterniond& q_wb, 
@@ -62,6 +60,11 @@ public:
 
     int numActiveTracks() const { return static_cast<int>(current_ids_.size()); }
     int numTotalTracks() const { return static_cast<int>(tracks_.size()); }
+    int numInitializedLandmarks() const {
+        int count = 0;
+        for (const auto& [fid, t] : tracks_) if (t.landmark_initialized) count++;
+        return count;
+    }
 
 private:
     uint64_t next_feature_id_ = 0;

@@ -38,8 +38,10 @@ CMakeFiles/
 CMakeScripts/
 cmake_install.cmake
 Makefile
+.cache/
 
 # macOS specific
 .DS_Store
+.claude/
 
 .vscode/

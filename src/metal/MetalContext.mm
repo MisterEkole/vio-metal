@@ -5,7 +5,6 @@
 
 namespace vio {
 
-// Helper to cast from void* back to Metal types
 #define AS_DEVICE ((__bridge id<MTLDevice>)device_)
 #define AS_QUEUE  ((__bridge id<MTLCommandQueue>)command_queue_)
 

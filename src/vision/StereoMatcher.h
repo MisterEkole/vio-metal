@@ -11,10 +11,10 @@ class StereoMatcher {
 public:
     struct Config {
         double max_epipolar_error = 2.0;    // pixels (vertical disparity after rectification)
-        double max_descriptor_dist = 50.0;  // Hamming distance for ORB
+        double max_descriptor_dist = 80.0;  // Hamming distance for ORB
         double min_disparity = 1.0;         // pixels (max depth cutoff)
         double max_disparity = 120.0;       // pixels (min depth cutoff)
-        double ratio_test = 0.8;            // Lowe's ratio test
+        double ratio_test = 0.9;            // Lowe's ratio test
     };
 
     struct StereoMatch {

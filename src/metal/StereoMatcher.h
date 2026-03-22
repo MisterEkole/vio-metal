@@ -47,8 +47,6 @@ public:
 
     ~MetalStereoMatcher() = default;
 
-    /// Match left vs right keypoints using ORB descriptors
-    /// Returns stereo matches with triangulated 3D points
     std::vector<StereoMatchResult> match(
         const std::vector<CornerPoint>& left_kpts,
         const std::vector<ORBDescriptorOutput>& left_desc,
